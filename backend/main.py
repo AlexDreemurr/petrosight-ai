@@ -25,8 +25,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:4173",
-        "https://petrosight-ai.netlify.app",
-        "https://*.netlify.app",
+        "https://resplendent-syrniki-0e1a75.netlify.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
