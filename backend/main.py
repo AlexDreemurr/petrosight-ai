@@ -112,6 +112,8 @@ async def upload_excel(file: UploadFile = File(...)):
                     "type": r["category"],
                     "zone": r["zone"],
                     "status": "online",
+                    "lng": 0.0,
+                    "lat": 0.0,
                 }
         if unique_sensors:
             supabase.table("sensors").upsert(
