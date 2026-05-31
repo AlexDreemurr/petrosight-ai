@@ -101,6 +101,23 @@ async def upload_excel(file: UploadFile = File(...)):
         records.append(record)
 
     if records:
+        # 自动注册 sensors 表中不存在的传感器（避免外键约束报错）
+        unique_sensors = {}
+        for r in records:
+            sid = r["sensor_id"]
+            if sid and sid not in unique_sensors:
+                unique_sensors[sid] = {
+                    "id": sid,
+                    "name": sid,
+                    "type": r["category"],
+                    "zone": r["zone"],
+                    "status": "online",
+                }
+        if unique_sensors:
+            supabase.table("sensors").upsert(
+                list(unique_sensors.values()), on_conflict="id"
+            ).execute()
+
         supabase.table("sensor_records").insert(records).execute()
 
     anomaly_count = sum(1 for r in records if r["severity"] in ("error", "warning"))
