@@ -1,3 +1,15 @@
+/**
+ * AnalysisPage - 数据分析页面
+ *
+ * 所在页面：路由 /analysis
+ * Props：无
+ * 功能：
+ *   1. 拖拽/点击上传传感器 Excel 文件，展示解析摘要（总数/异常/类别/区域）
+ *   2. 用户输入分析任务描述，调用 AI 分析接口，渲染 Markdown 格式报告
+ * 依赖接口：
+ *   - POST /api/upload-excel（上传 Excel，返回解析摘要）
+ *   - POST /api/analyze（调用 DeepSeek AI，返回安全分析报告）
+ */
 import React, { useState, useRef } from "react";
 import styled from "styled-components";
 import { uploadExcel, analyze } from "../../../api";

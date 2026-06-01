@@ -1,3 +1,15 @@
+/**
+ * AssessmentPage - 传感器状态评估页面
+ *
+ * 所在页面：路由 /assessment
+ * Props：无
+ * 功能：
+ *   - 以表格形式展示传感器数据记录，每行显示等级/传感器ID/类别/标题/数值/区域/时间
+ *   - 支持按 severity（等级）、category（类别）、zone（区域）实时过滤
+ *   - 每次过滤条件变更后重新请求后端数据（非前端筛选）
+ * 依赖接口：
+ *   - GET /api/records（查询传感器数据记录，支持 zone/severity/category 过滤参数）
+ */
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { getRecords } from "../../../api";

@@ -1,3 +1,10 @@
+/**
+ * Header - 顶部导航栏，展示系统标题
+ *
+ * 所在页面：所有页面（固定在顶部，由 App.jsx 全局渲染）
+ * Props：无
+ * 依赖接口：无
+ */
 import React from "react";
 import styled from "styled-components";
 

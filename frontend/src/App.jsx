@@ -1,3 +1,14 @@
+/**
+ * App - 应用根组件，定义全局布局和前端路由
+ *
+ * 所在页面：应用入口，所有页面的父容器
+ * 布局结构：顶部 Header + 左侧 SideBar + 右侧 Main 内容区
+ * 路由：
+ *   /            → OverViewPage（厂区总览）
+ *   /analysis    → AnalysisPage（数据分析）
+ *   /history     → HistoryPage（历史日志）
+ *   /assessment  → AssessmentPage（状态评估）
+ */
 import { BrowserRouter, Routes, Route } from "react-router";
 import styled from "styled-components";
 import GlobalStyles from "./GlobalStyles";

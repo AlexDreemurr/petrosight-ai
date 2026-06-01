@@ -1,3 +1,16 @@
+/**
+ * Icon - 图标统一封装组件
+ *
+ * 所在页面：SideBar（导航图标）及其他需要图标的场景
+ * Props：
+ *   id (string) - 图标标识符，必填。
+ *                 可选值：Languages / user / overview / analysis / history / assessment
+ *   color (string) - 图标颜色，可选，默认继承
+ *   size (number) - 图标尺寸（px），可选，默认 24
+ *   strokeWidth (number) - 描边宽度，可选
+ * 依赖接口：无
+ * 注意：传入不存在的 id 会抛出 Error
+ */
 import React from "react";
 import styled from "styled-components";
 import { ChevronDown, Menu, X } from "react-feather";

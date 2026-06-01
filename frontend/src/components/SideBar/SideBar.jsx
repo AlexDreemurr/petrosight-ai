@@ -1,3 +1,12 @@
+/**
+ * SideBar - 左侧路由导航栏
+ *
+ * 所在页面：所有页面（固定在左侧，由 App.jsx 全局渲染）
+ * Props：无
+ * 功能：渲染四个导航项（厂区总览 / 数据分析 / 历史日志 / 状态评估），
+ *       当前激活路由高亮显示（使用 NavLink .active 类）
+ * 依赖接口：无
+ */
 import React from "react";
 import { NavLink } from "react-router";
 import styled from "styled-components";

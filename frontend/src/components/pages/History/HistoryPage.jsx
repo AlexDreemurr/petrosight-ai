@@ -1,3 +1,15 @@
+/**
+ * HistoryPage - 历史分析日志页面
+ *
+ * 所在页面：路由 /history
+ * Props：无
+ * 功能：
+ *   - 进入页面时自动拉取历史 AI 分析记录列表
+ *   - 每条记录展示用户提示、异常数、总条数、创建时间
+ *   - 点击卡片可展开/折叠完整的 AI 分析报告（Markdown 渲染）
+ * 依赖接口：
+ *   - GET /api/history（获取历史分析记录列表，默认最近 50 条）
+ */
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { getHistory } from "../../../api";
