@@ -237,16 +237,22 @@ class AnalyzeRequest(BaseModel):
     "/api/analyze",
     summary="调用 DeepSeek AI 进行安全分析",
     description=(
-        "根据用户描述和已上传的数据摘要，调用 DeepSeek Chat API 生成专业安全分析报告，"
-        "并将报告持久化到 analysis_records 表。报告包含风险评估摘要、主要异常分析、"
-        "建议措施和后续监控重点四个章节。超时时间为 90 秒。"
+        "从数据库查询本次上传的原始传感器记录，转为 CSV 后直接传递给 DeepSeek API，"
+        "让 AI 基于完整原始数据生成安全分析报告，并将报告持久化到 analysis_records 表。"
+        "超时时间为 90 秒。"
     ),
     tags=["AI 分析"],
     response_description="包含 Markdown 格式 AI 报告的 JSON，字段名为 report",
 )
 async def analyze(req: AnalyzeRequest):
     """
-    调用 DeepSeek API 生成安全分析报告并存储历史记录。
+    从数据库取回原始传感器记录，转 CSV 后传给 DeepSeek 生成安全分析报告。
+
+    流程：
+    1. 从 data_summary 提取 zones 和 total，到 sensor_records 中查对应的最新记录
+    2. 用 pandas 将记录转为 CSV 字符串（只保留分析有意义的字段）
+    3. 将 CSV 原始数据嵌入 prompt，调用 DeepSeek API
+    4. 将报告写入 analysis_records，data_summary 只存简要统计
 
     Args:
         req.user_prompt: 用户输入的分析任务描述（必填，可为空字符串使用默认提示）
@@ -266,36 +272,47 @@ async def analyze(req: AnalyzeRequest):
 
     total = req.data_summary.get("total", 0)
     anomaly_count = req.data_summary.get("anomaly_count", 0)
-    categories = ", ".join(req.data_summary.get("categories", []))
-    zones = ", ".join(req.data_summary.get("zones", []))
-    severity = req.data_summary.get("severity_breakdown", {})
+    zones: list = req.data_summary.get("zones", [])
+    severity_breakdown = req.data_summary.get("severity_breakdown", {})
 
-    prompt = f"""你是一名石化厂区安全分析专家。用户提供了以下传感器数据摘要和分析任务，请用中文输出专业的安全分析报告。
+    # ── 1. 从 DB 查出本次上传的原始记录 ──────────────────────────────────────
+    query = supabase.table("sensor_records").select(
+        "recorded_at, zone, sensor_id, category, value, unit, severity, title, detail"
+    )
+    if zones:
+        # 用 in_ 过滤，按区域范围缩小查询
+        query = query.in_("zone", zones)
+    raw_rows = (
+        query.order("recorded_at", desc=True)
+        .limit(total or 500)
+        .execute()
+        .data
+    )
 
-【用户任务描述】
-{req.user_prompt}
+    # ── 2. 转 CSV ─────────────────────────────────────────────────────────────
+    csv_columns = ["recorded_at", "zone", "sensor_id", "category",
+                   "value", "unit", "severity", "title", "detail"]
+    if raw_rows:
+        df_csv = pd.DataFrame(raw_rows)[csv_columns]
+        csv_text = df_csv.to_csv(index=False)
+    else:
+        csv_text = "（无可用原始数据）"
 
-【数据摘要】
-- 总记录数：{total} 条
-- 异常数量：{anomaly_count} 条（其中 error {severity.get('error', 0)} 条，warning {severity.get('warning', 0)} 条）
-- 涉及传感器类别：{categories}
-- 涉及区域：{zones}
+    # ── 3. 组装 prompt ────────────────────────────────────────────────────────
+    prompt = f"""你是一名石化厂区安全分析专家。以下是本次上传的传感器原始数据（CSV格式）：
 
-请按照以下结构输出报告：
+{csv_text}
 
-## 一、风险评估摘要
-（整体风险等级与核心结论）
+请根据以上数据完成以下分析：
+1. 按区域归纳异常情况，重点说明哪个区域问题最集中
+2. 按传感器类型分析，哪类传感器出现异常最多
+3. 列出最需要立即处理的事件（error 级别）
+4. 给出整体安全评估和处理建议
 
-## 二、主要异常分析
-（列举并分析关键异常，给出可能的成因）
-
-## 三、建议措施
-（列出 3-5 条具体可执行的安全措施）
-
-## 四、后续监控重点
-（指出需要持续关注的传感器类别、区域或指标）
+用户的具体问题是：{req.user_prompt or "请对当前传感器数据进行全面安全分析"}
 """
 
+    # ── 4. 调用 DeepSeek API ──────────────────────────────────────────────────
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(
@@ -320,9 +337,17 @@ async def analyze(req: AnalyzeRequest):
 
     ai_report = resp.json()["choices"][0]["message"]["content"]
 
+    # ── 5. 写入 analysis_records（data_summary 只存简要统计）────────────────
+    slim_summary = {
+        "total": total,
+        "severity_breakdown": severity_breakdown,
+        "zones": zones,
+        "categories": req.data_summary.get("categories", []),
+        "note": "原始数据已直接传递给AI，未做二次聚合",
+    }
     supabase.table("analysis_records").insert({
         "user_prompt": req.user_prompt,
-        "data_summary": req.data_summary,
+        "data_summary": slim_summary,
         "ai_report": ai_report,
         "record_count": total,
         "anomaly_count": anomaly_count,
