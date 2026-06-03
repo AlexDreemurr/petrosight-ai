@@ -13,6 +13,7 @@
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { getHistory } from "../../../api";
+import Markdown from "../../Markdown/Markdown";
 
 function fmt(iso) {
   if (!iso) return "";
@@ -56,12 +57,7 @@ function HistoryPage() {
             </CardHeader>
             {expanded === r.id && (
               <ReportBox>
-                {(r.ai_report || "").split("\n").map((line, i) => {
-                  if (line.startsWith("## ")) return <RH2 key={i}>{line.replace("## ", "")}</RH2>;
-                  if (line.startsWith("# ")) return <RH1 key={i}>{line.replace("# ", "")}</RH1>;
-                  if (line.trim() === "") return <br key={i} />;
-                  return <RLine key={i}>{line}</RLine>;
-                })}
+                <Markdown>{r.ai_report}</Markdown>
               </ReportBox>
             )}
           </RecordCard>
@@ -111,13 +107,6 @@ const Chevron = styled.span`
 const ReportBox = styled.div`
   padding: 20px 24px;
   border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 `;
-
-const RH1 = styled.h1`margin-top: 10px;`;
-const RH2 = styled.h2`margin-top: 10px; color: var(--color-secondary);`;
-const RLine = styled.p`line-height: 1.7; font-size: var(--font-default);`;
 
 export default HistoryPage;

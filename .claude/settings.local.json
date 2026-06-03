@@ -4,7 +4,18 @@
       "Bash(npx vite *)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(npx eslint *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(python -c \"import pandas, openpyxl; print\\('ok', pandas.__version__\\)\")",
+      "Bash(python generate_mock.py)",
+      "Bash(python -c \"import pandas as pd; df=pd.read_excel\\('mock_data.xlsx'\\); print\\('columns:', list\\(df.columns\\)\\); print\\('rows:', len\\(df\\)\\); print\\('unique sensors:', df['sensor_id'].nunique\\(\\)\\); print\\('lng range:', df['lng'].min\\(\\), '-', df['lng'].max\\(\\)\\); print\\('lat range:', df['lat'].min\\(\\), '-', df['lat'].max\\(\\)\\); print\\('per-sensor unique coords:', df.groupby\\('sensor_id'\\)[['lng','lat']].nunique\\(\\).max\\(\\).to_dict\\(\\)\\)\")",
+      "Bash(python -c \"import sys; [print\\(l, end=''\\) for l in sys.stdin]\")",
+      "Bash(python -c \"import pandas as pd; df=pd.read_excel\\('mock_data.xlsx'\\); print\\('rows:', len\\(df\\)\\); print\\('sensors:', df['sensor_id'].nunique\\(\\)\\); print\\('types in file:', sorted\\(df['type'].unique\\(\\)\\)\\); print\\('allowed = gas/thermal/camera/drone'\\); bad=set\\(df['type'].unique\\(\\)\\)-{'gas','thermal','camera','drone'}; print\\('INVALID types:', bad if bad else 'none ✓'\\)\")",
+      "Bash(python -X utf8 -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(python -c \"import sys;print\\(sys.stdin.read\\(\\)\\)\")",
+      "Bash(npm install *)"
     ]
   }
 }

@@ -29,6 +29,11 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+# 数据库 CHECK 约束允许的取值集合（与 Supabase 实际约束一致，已实测验证）。
+# 上传 Excel 时据此校验，避免非法值触发 Postgres 写库 500。
+ALLOWED_SENSOR_TYPES = {"gas", "thermal", "camera", "drone"}        # sensors.type
+ALLOWED_CATEGORIES = {"gas", "thermal", "behavior", "device"}      # sensor_records.category
+
 app = FastAPI(
     title="PetroSight AI 后端接口",
     description="石化厂区全场景北斗/多传感器融合主动感知识别与定位系统 API 文档",
@@ -55,7 +60,8 @@ def get_severity(category: str, value: float) -> str:
     业务规则：
     - gas（气体）：value > 400 → error；value > 200 → warning；否则 → info
     - thermal（热成像）：value > 300 → error；value > 150 → warning；否则 → info
-    - 其他类别：统一返回 info
+    - behavior（摄像头行为识别）：value >= 1（拍到违规）→ warning；否则 → info
+    - 其他类别（如 device/无人机）：统一返回 info
 
     Args:
         category: 传感器类别，如 "gas"、"thermal"、"behavior"、"device"
@@ -76,6 +82,9 @@ def get_severity(category: str, value: float) -> str:
         if value > 150:
             return "warning"
         return "info"
+    if category == "behavior":
+        # 摄像头识别到不规范行为（value>=1）即触发黄色预警
+        return "warning" if value >= 1 else "info"
     return "info"
 
 
@@ -96,44 +105,112 @@ def root():
     return {"status": "ok", "service": "PetroSight AI"}
 
 
+def _to_float(val, default=0.0):
+    """安全地把单元格转为 float，空值/异常返回默认值。"""
+    try:
+        if pd.isna(val):
+            return default
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+@app.post(
+    "/api/register-sensors",
+    summary="注册传感器（上传传感器信息表）",
+    description=(
+        "上传一张传感器信息 Excel，将其 upsert 到 sensors 表。这是数据上传前的第一步——"
+        "先注册传感器（含坐标/类型/区域），之后再上传数据快照。重复上传同一 ID 会更新其信息。"
+    ),
+    tags=["数据上传"],
+    response_description="注册结果：注册数量与传感器 ID 列表",
+)
+async def register_sensors(file: UploadFile = File(...)):
+    """
+    上传传感器信息 Excel 并 upsert 到 sensors 表。
+
+    Excel 必填列：id、type、zone
+    可选列：name（默认取 id）、lng、lat（默认 0）、status（默认 online）、floor、description
+
+    Raises:
+        HTTPException 400: 文件格式错误 / 缺列 / type 非法
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx / .xls 文件")
+
+    contents = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Excel 解析失败: {str(e)}")
+
+    required = {"id", "type", "zone"}
+    miss = required - set(df.columns)
+    if miss:
+        raise HTTPException(status_code=400, detail=f"缺少必填列: {miss}")
+
+    sensors = {}
+    invalid_types = {}
+    for _, row in df.iterrows():
+        sid = str(row.get("id", "")).strip()
+        if not sid:
+            continue
+        stype = str(row.get("type", "")).strip().lower()
+        if stype not in ALLOWED_SENSOR_TYPES:
+            invalid_types[sid] = stype
+        sensors[sid] = {
+            "id": sid,
+            "name": str(row.get("name", "")).strip() or sid,
+            "type": stype,
+            "zone": str(row.get("zone", "")).strip(),
+            "lng": _to_float(row.get("lng"), 0.0),
+            "lat": _to_float(row.get("lat"), 0.0),
+            "status": str(row.get("status", "")).strip() or "online",
+        }
+
+    if invalid_types:
+        items = "、".join(f"{sid}（type={t}）" for sid, t in invalid_types.items())
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"以下传感器 type 不合法：{items}。"
+                f"type 仅允许 {sorted(ALLOWED_SENSOR_TYPES)} 之一。"
+            ),
+        )
+    if not sensors:
+        raise HTTPException(status_code=400, detail="未解析到任何传感器")
+
+    supabase.table("sensors").upsert(list(sensors.values()), on_conflict="id").execute()
+    return {"registered": len(sensors), "sensor_ids": list(sensors.keys())}
+
+
 @app.post(
     "/api/upload-excel",
-    summary="上传并解析传感器 Excel 数据",
+    summary="上传数据快照",
     description=(
-        "接收 .xlsx / .xls 格式的传感器数据文件，使用 pandas 解析后批量写入 "
-        "sensor_records 表。上传前会自动将文件中出现的传感器 ID upsert 到 sensors 表，"
-        "避免外键约束报错。每条记录的 severity 由后端规则自动判定，无需前端传入。"
+        "上传一份「数据快照」Excel：同一时刻全场景传感器的读数（所有行 recorded_at 相同）。"
+        "解析后批量写入 sensor_records 表，severity 由后端规则自动判定。"
+        "要求所涉传感器已通过 /api/register-sensors 注册，否则返回 400。"
     ),
     tags=["数据上传"],
     response_description="解析摘要，包含总记录数、异常统计、类别列表、区域列表及前5条预览",
 )
 async def upload_excel(file: UploadFile = File(...)):
     """
-    上传传感器数据 Excel 文件并批量写入数据库。
+    上传一份数据快照并写入 sensor_records。
 
-    Excel 必须包含以下列（大小写不敏感）：
-    - sensor_id：传感器 ID，如 GAS-01
-    - category：类别，gas / thermal / behavior / device
-    - value：数值（浮点）
+    Excel 必填列：sensor_id、category、value
+    可选列：unit、title、detail、zone、recorded_at（同一份内通常相同）
 
-    可选列：unit、severity（会被覆盖）、title、detail、zone、recorded_at
-
-    Args:
-        file: 上传的 Excel 文件，仅支持 .xlsx / .xls 格式
-
-    Returns:
-        {
-            "total": 总记录数,
-            "anomaly_count": 异常记录数（error + warning）,
-            "categories": 涉及的类别列表,
-            "zones": 涉及的区域列表,
-            "severity_breakdown": {"error": N, "warning": N, "info": N},
-            "preview": 前5条记录列表
-        }
+    与旧版区别：不再从数据文件读取 / 写入坐标与类型——这些由传感器注册负责；
+    本接口只追加读数，且会校验传感器是否已注册。
 
     Raises:
-        HTTPException 400: 文件格式不是 .xlsx/.xls，或缺少必填列，或 Excel 解析失败
-        HTTPException 500: Supabase 写入失败（如外键冲突等数据库错误）
+        HTTPException 400: 文件格式错误 / 缺列 / category 非法 / 存在未注册传感器
+        HTTPException 500: Supabase 写入失败
     """
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="仅支持 .xlsx / .xls 文件")
@@ -150,12 +227,12 @@ async def upload_excel(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"缺少必填列: {missing}")
 
     records = []
+    invalid_categories = set()
     for _, row in df.iterrows():
         category = str(row.get("category", "")).lower().strip()
-        try:
-            value = float(row.get("value", 0))
-        except (ValueError, TypeError):
-            value = 0.0
+        if category and category not in ALLOWED_CATEGORIES:
+            invalid_categories.add(category)
+        value = _to_float(row.get("value"), 0.0)
 
         raw_time = row.get("recorded_at")
         if pd.isna(raw_time) if hasattr(raw_time, "__class__") else not raw_time:
@@ -179,25 +256,31 @@ async def upload_excel(file: UploadFile = File(...)):
         }
         records.append(record)
 
+    # category 白名单校验
+    if invalid_categories:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"以下 category 不合法：{sorted(invalid_categories)}。"
+                f"category 仅允许 {sorted(ALLOWED_CATEGORIES)} 之一。"
+                "请检查 Excel 的 category 列（注意 camera/drone 属于 type，不是 category）。"
+            ),
+        )
+
+    # 校验传感器是否已注册（外键依赖 sensors 表）
     if records:
-        # 自动注册 sensors 表中不存在的传感器（避免外键约束报错）
-        unique_sensors = {}
-        for r in records:
-            sid = r["sensor_id"]
-            if sid and sid not in unique_sensors:
-                unique_sensors[sid] = {
-                    "id": sid,
-                    "name": sid,
-                    "type": r["category"],
-                    "zone": r["zone"],
-                    "status": "online",
-                    "lng": 0.0,
-                    "lat": 0.0,
-                }
-        if unique_sensors:
-            supabase.table("sensors").upsert(
-                list(unique_sensors.values()), on_conflict="id"
-            ).execute()
+        referenced = {r["sensor_id"] for r in records if r["sensor_id"]}
+        existing_rows = supabase.table("sensors").select("id").execute().data or []
+        existing = {s["id"] for s in existing_rows}
+        unregistered = sorted(referenced - existing)
+        if unregistered:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"以下传感器尚未注册：{unregistered}。"
+                    "请先在「传感器注册」上传传感器信息表（sensors.xlsx）后再上传数据快照。"
+                ),
+            )
 
         supabase.table("sensor_records").insert(records).execute()
 
@@ -227,10 +310,14 @@ class AnalyzeRequest(BaseModel):
 
     Attributes:
         user_prompt: 用户输入的分析任务描述，如"请重点分析A区气体泄漏风险"
-        data_summary: 由 /api/upload-excel 返回的数据摘要 JSON
+        data_summary: 由 /api/upload-excel 返回的数据摘要 JSON（可为空对象）
+        start_time: 可选，分析数据的起始时间（ISO 字符串，含此刻）
+        end_time: 可选，分析数据的结束时间（ISO 字符串，含此刻）
     """
     user_prompt: str
-    data_summary: dict
+    data_summary: dict = {}
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
 
 
 @app.post(
@@ -275,16 +362,22 @@ async def analyze(req: AnalyzeRequest):
     zones: list = req.data_summary.get("zones", [])
     severity_breakdown = req.data_summary.get("severity_breakdown", {})
 
-    # ── 1. 从 DB 查出本次上传的原始记录 ──────────────────────────────────────
+    # ── 1. 从 DB 查出原始记录（可选按区域 / 时间段过滤）────────────────────────
     query = supabase.table("sensor_records").select(
         "recorded_at, zone, sensor_id, category, value, unit, severity, title, detail"
     )
     if zones:
         # 用 in_ 过滤，按区域范围缩小查询
         query = query.in_("zone", zones)
+    if req.start_time:
+        query = query.gte("recorded_at", req.start_time)
+    if req.end_time:
+        query = query.lte("recorded_at", req.end_time)
+    # 指定了时间段时取满额上限，否则沿用 summary 的 total（默认 500）
+    limit = 500 if (req.start_time or req.end_time) else (total or 500)
     raw_rows = (
         query.order("recorded_at", desc=True)
-        .limit(total or 500)
+        .limit(limit)
         .execute()
         .data
     )
@@ -299,7 +392,11 @@ async def analyze(req: AnalyzeRequest):
         csv_text = "（无可用原始数据）"
 
     # ── 3. 组装 prompt ────────────────────────────────────────────────────────
-    prompt = f"""你是一名石化厂区安全分析专家。以下是本次上传的传感器原始数据（CSV格式）：
+    if req.start_time or req.end_time:
+        scope = f"（数据时间范围：{req.start_time or '最早'} ~ {req.end_time or '最新'}）"
+    else:
+        scope = "（数据范围：数据库中全部记录）"
+    prompt = f"""你是一名石化厂区安全分析专家。以下是待分析的传感器原始数据{scope}（CSV格式）：
 
 {csv_text}
 

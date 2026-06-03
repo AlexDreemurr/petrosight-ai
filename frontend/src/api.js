@@ -9,17 +9,28 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+export async function registerSensors(file) {
+  const form = new FormData();
+  form.append("file", file);
+  return request("/api/register-sensors", { method: "POST", body: form });
+}
+
 export async function uploadExcel(file) {
   const form = new FormData();
   form.append("file", file);
   return request("/api/upload-excel", { method: "POST", body: form });
 }
 
-export async function analyze(userPrompt, dataSummary) {
+export async function analyze(userPrompt, dataSummary, range = {}) {
   return request("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_prompt: userPrompt, data_summary: dataSummary }),
+    body: JSON.stringify({
+      user_prompt: userPrompt,
+      data_summary: dataSummary,
+      start_time: range.start || null,
+      end_time: range.end || null,
+    }),
   });
 }
 

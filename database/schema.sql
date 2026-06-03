@@ -12,7 +12,8 @@
 CREATE TABLE IF NOT EXISTS public.sensors (
     id           VARCHAR        PRIMARY KEY,                          -- 传感器唯一ID，如 GAS-01、CAM-03
     name         VARCHAR        NOT NULL,                             -- 显示名称
-    type         VARCHAR        NOT NULL,                             -- 类型：gas / thermal / camera / drone
+    type         VARCHAR        NOT NULL
+                 CHECK (type IN ('gas', 'thermal', 'camera', 'drone')), -- 类型：gas / thermal / camera / drone
     zone         VARCHAR        NOT NULL,                             -- 所在区域编号
     lng          FLOAT,                                               -- 经度
     lat          FLOAT,                                               -- 纬度
@@ -31,10 +32,12 @@ ALTER TABLE public.sensors DISABLE ROW LEVEL SECURITY;
 CREATE TABLE IF NOT EXISTS public.sensor_records (
     id          UUID           PRIMARY KEY DEFAULT gen_random_uuid(), -- 记录唯一ID
     sensor_id   VARCHAR        REFERENCES public.sensors(id),        -- 关联传感器ID（外键）
-    category    VARCHAR        NOT NULL,                              -- 数据类别，如 gas / temperature / image
+    category    VARCHAR        NOT NULL
+                CHECK (category IN ('gas', 'thermal', 'behavior', 'device')), -- 数据类别：gas / thermal / behavior / device
     value       FLOAT,                                                -- 数值（数值类传感器）
     unit        VARCHAR,                                              -- 单位，如 ppm、℃、%
-    severity    VARCHAR        NOT NULL,                              -- 严重程度：normal / warning / danger
+    severity    VARCHAR        NOT NULL
+                CHECK (severity IN ('error', 'warning', 'info')),     -- 严重程度：error / warning / info（后端 get_severity 判定）
     title       VARCHAR        NOT NULL,                              -- 事件标题
     detail      VARCHAR,                                              -- 事件详情描述
     zone        VARCHAR        NOT NULL,                              -- 所在区域（冗余存储，方便查询）
