@@ -9,7 +9,7 @@ PetroSight AI 后端主模块
 下游依赖：Supabase（PostgreSQL 数据存储）、DeepSeek API（AI 推理）
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
@@ -33,6 +33,80 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # 上传 Excel 时据此校验，避免非法值触发 Postgres 写库 500。
 ALLOWED_SENSOR_TYPES = {"gas", "thermal", "camera", "drone"}        # sensors.type
 ALLOWED_CATEGORIES = {"gas", "thermal", "behavior", "device"}      # sensor_records.category
+
+# ──────────────────────────────────────────────────────────────────────────
+# 图像识别（YOLO-World 开放词表）配置
+# ──────────────────────────────────────────────────────────────────────────
+ENABLE_YOLO = os.getenv("ENABLE_YOLO", "true").lower() != "false"
+YOLO_OPEN_MODEL = os.getenv("YOLO_OPEN_MODEL", "yolov8s-worldv2.pt")
+
+# classes 为空时的默认检测目标（开放词表用英文最稳）
+DEFAULT_CLASSES = ["person", "fire", "smoke", "helmet", "car", "truck"]
+# 命中即标记为风险（前端红色高亮），可按需扩充
+RISK_CLASSES = {
+    "fire", "flame", "flames", "burning", "smoke", "smog",
+    "no helmet", "no-helmet", "bare head", "spill", "leak",
+}
+# 英文目标词 → 中文展示（兜底用，找不到回退英文原词）
+LABEL_CN = {
+    "person": "人员", "fire": "明火", "flame": "火焰", "flames": "火焰",
+    "burning": "燃烧", "smoke": "烟雾", "smog": "烟雾", "helmet": "安全帽",
+    "hard hat": "安全帽", "no helmet": "未戴安全帽", "bare head": "未戴安全帽",
+    "car": "车辆", "truck": "卡车", "forklift": "叉车",
+    "spill": "泄漏物", "leak": "泄漏",
+}
+
+# 可选模型注册表：开放词表通用模型 + 各专用权重。
+# 专用权重不随仓库分发，需下载 best.pt 放到对应路径（或用环境变量覆盖）。
+DETECT_MODELS = {
+    "open": {
+        "name": "通用开放词表 (YOLO-World)",
+        "weights": YOLO_OPEN_MODEL,
+        "open_vocab": True,
+    },
+    "helmet": {
+        "name": "安全帽检测 (YOLOv8)",
+        "weights": os.getenv("HELMET_MODEL_PATH", "weights/helmet.pt"),
+        "open_vocab": False,
+        "label_cn": {
+            "helmet": "安全帽", "head": "未戴安全帽", "person": "人员",
+            "no-helmet": "未戴安全帽", "no_helmet": "未戴安全帽",
+            "without helmet": "未戴安全帽", "motorcycle": "摩托车",
+        },
+        "risk": {"head", "no-helmet", "no_helmet", "without helmet"},
+    },
+}
+
+_model_cache = {}  # model_id -> 已加载模型
+
+
+def get_detect_model(model_id: str):
+    """懒加载并缓存指定模型；返回 (model, cfg)。失败抛 RuntimeError。"""
+    cfg = DETECT_MODELS.get(model_id)
+    if not cfg:
+        raise RuntimeError(f"未知模型：{model_id}")
+    if model_id in _model_cache:
+        return _model_cache[model_id], cfg
+
+    weights = cfg["weights"]
+    if not cfg["open_vocab"] and not os.path.exists(weights):
+        raise RuntimeError(
+            f"权重文件不存在：{weights}。请下载该专用模型的 best.pt 放到此路径，"
+            f"或用环境变量指定路径。"
+        )
+    try:
+        if cfg["open_vocab"]:
+            from ultralytics import YOLOWorld
+            model = YOLOWorld(weights)
+        else:
+            from ultralytics import YOLO
+            model = YOLO(weights)
+    except ImportError as e:
+        raise RuntimeError(f"未安装 ultralytics 依赖：{e}")
+    except Exception as e:
+        raise RuntimeError(f"模型加载失败（{weights}）：{e}")
+    _model_cache[model_id] = model
+    return model, cfg
 
 app = FastAPI(
     title="PetroSight AI 后端接口",
@@ -591,3 +665,192 @@ async def push_sensor_data(payload: dict):
     }
     supabase.table("sensor_records").insert(record).execute()
     return {"status": "received"}
+
+
+@app.post(
+    "/api/detect-image",
+    summary="图像异常识别（YOLO-World 开放词表）",
+    description=(
+        "上传图片 + 目标词列表（classes），用 YOLO-World 开放词表模型按提示词检测，"
+        "返回归一化检测框并落库 detection_records。目标词建议用英文（开放词表文本编码器对英文最稳）。"
+    ),
+    tags=["图像识别"],
+    response_description="检测结果：图片尺寸、目标数、风险数、归一化检测框数组、记录 id",
+)
+async def detect_image(
+    file: UploadFile = File(...),
+    model: str = Form("open"),
+    classes: str = Form("[]"),
+    conf: float = Form(0.1),
+    imgsz: int = Form(640),
+    zone: Optional[str] = Form(None),
+):
+    """
+    对上传图片做目标检测，可选模型。
+
+    表单字段：
+        file:    图片（.jpg/.jpeg/.png）
+        model:   模型 id，见 GET /api/detect-models（默认 "open" 开放词表）
+        classes: JSON 字符串数组（仅开放词表模型有效），如 ["person","fire"]
+        conf:    置信度阈值，默认 0.1
+        zone:    可选，所属区域
+
+    Returns:
+        {image, model, classes_used, count, risk_count, detections[], record_id}
+
+    Raises:
+        HTTPException 400: 非图片 / 解析失败 / classes 不是 JSON 数组
+        HTTPException 503: 服务未启用 / 模型未就绪（权重缺失等）
+    """
+    if not ENABLE_YOLO:
+        raise HTTPException(status_code=503, detail="图像识别服务未启用（ENABLE_YOLO=false）")
+    if not file.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        raise HTTPException(status_code=400, detail="仅支持 .jpg / .jpeg / .png 图片")
+    if model not in DETECT_MODELS:
+        raise HTTPException(status_code=400, detail=f"未知模型：{model}")
+
+    # 解析 classes（仅开放词表用）
+    import json
+    try:
+        target_classes = json.loads(classes) if classes else []
+        if not isinstance(target_classes, list):
+            raise ValueError
+        target_classes = [str(c).strip() for c in target_classes if str(c).strip()]
+    except Exception:
+        raise HTTPException(status_code=400, detail="classes 需为 JSON 字符串数组，如 [\"person\",\"fire\"]")
+
+    # 读图
+    from PIL import Image
+    contents = await file.read()
+    try:
+        img = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片解析失败：{e}")
+    w, h = img.size
+
+    # 加载模型 + 推理
+    try:
+        net, cfg = get_detect_model(model)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=f"图像识别服务不可用：{e}")
+    try:
+        import numpy as np
+        if cfg["open_vocab"]:
+            if not target_classes:
+                target_classes = list(DEFAULT_CLASSES)
+            net.set_classes(target_classes)
+        # imgsz 提高可改善小/远目标（如远处火焰、烟雾）召回；限制在合理范围
+        isz = max(320, min(1536, int(imgsz)))
+        results = net.predict(np.array(img), conf=float(conf), imgsz=isz, verbose=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"推理失败：{e}")
+
+    # 该模型的中文/风险映射（专用模型用自己的，找不到回退全局）
+    label_cn_map = cfg.get("label_cn", LABEL_CN)
+    risk_set = cfg.get("risk", RISK_CLASSES)
+
+    res = results[0]
+    # 类名查找：res.names 可能是 dict（{idx:名}）或 list（[名,...]），兼容两者
+    names = res.names  # 开放词表时即 set_classes 设定的类
+
+    def name_of(ci):
+        if isinstance(names, dict):
+            return names.get(ci, names.get(str(ci), str(ci)))
+        if isinstance(names, (list, tuple)) and 0 <= ci < len(names):
+            return names[ci]
+        return str(ci)
+
+    # 组装归一化检测框
+    detections = []
+    boxes = getattr(res, "boxes", None)
+    if boxes is not None and len(boxes) > 0:
+        xyxyn = boxes.xyxyn.tolist()
+        confs = boxes.conf.tolist()
+        cls_idx = [int(i) for i in boxes.cls.tolist()]
+        for i, (bb, cf, ci) in enumerate(zip(xyxyn, confs, cls_idx)):
+            x1, y1, x2, y2 = bb
+            label = str(name_of(ci))
+            low = label.lower()
+            detections.append({
+                "id": i,
+                "label": label,
+                "label_cn": label_cn_map.get(low, label_cn_map.get(label, LABEL_CN.get(low, label))),
+                "confidence": round(float(cf), 2),
+                "risk": (low in risk_set) or (label in risk_set),
+                "box": {
+                    "x": round(max(0.0, x1), 4),
+                    "y": round(max(0.0, y1), 4),
+                    "w": round(max(0.0, x2 - x1), 4),
+                    "h": round(max(0.0, y2 - y1), 4),
+                },
+            })
+
+    risk_count = sum(1 for d in detections if d["risk"])
+    if cfg["open_vocab"]:
+        classes_used = target_classes
+    elif isinstance(names, dict):
+        classes_used = list(names.values())
+    elif isinstance(names, (list, tuple)):
+        classes_used = list(names)
+    else:
+        classes_used = []
+
+    # 落库
+    record_id = None
+    try:
+        inserted = supabase.table("detection_records").insert({
+            "image_name": file.filename,
+            "image_w": w,
+            "image_h": h,
+            "zone": zone,
+            "classes": classes_used,
+            "object_count": len(detections),
+            "risk_count": risk_count,
+            "detections": detections,
+        }).execute()
+        if inserted.data:
+            record_id = inserted.data[0].get("id")
+    except Exception:
+        # 落库失败不影响返回检测结果
+        record_id = None
+
+    return {
+        "image": {"width": w, "height": h, "name": file.filename},
+        "model": model,
+        "classes_used": classes_used,
+        "count": len(detections),
+        "risk_count": risk_count,
+        "detections": detections,
+        "record_id": record_id,
+    }
+
+
+@app.get(
+    "/api/detect-models",
+    summary="获取可用的图像识别模型列表",
+    description="返回开放词表通用模型与各专用模型的可用性，供前端下拉选择。",
+    tags=["图像识别"],
+    response_description="模型数组：id / name / open_vocab / classes / available / note",
+)
+def list_detect_models():
+    """列出注册的检测模型及其可用状态。"""
+    out = []
+    for mid, cfg in DETECT_MODELS.items():
+        available, note = True, ""
+        if not ENABLE_YOLO:
+            available, note = False, "图像识别未启用（ENABLE_YOLO=false）"
+        elif not cfg["open_vocab"] and not os.path.exists(cfg["weights"]):
+            available, note = False, "专用权重未就绪，请放置 best.pt"
+        # 专用模型用 label_cn 的中文值展示其可识别类别（开放词表为 None）
+        cn_classes = None
+        if not cfg["open_vocab"]:
+            cn_classes = sorted(set(cfg.get("label_cn", {}).values())) or None
+        out.append({
+            "id": mid,
+            "name": cfg["name"],
+            "open_vocab": cfg["open_vocab"],
+            "classes": cn_classes,
+            "available": available,
+            "note": note,
+        })
+    return out

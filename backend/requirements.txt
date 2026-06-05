@@ -6,3 +6,8 @@ supabase==2.10.0
 httpx==0.27.0
 python-dotenv==1.0.1
 python-multipart==0.0.12
+
+# Image detection (YOLO-World open-vocabulary). Heavy; only needed when
+# ENABLE_YOLO=true. Render free tier may not handle it; set ENABLE_YOLO=false there.
+ultralytics==8.3.0
+pillow==10.4.0

@@ -34,6 +34,8 @@ import {
   Camera,
   Plane,
   AlertTriangle,
+  Upload,
+  ScanLine,
 } from "lucide-react";
 
 const icons = {
@@ -55,6 +57,8 @@ const icons = {
   camera: Camera,
   drone: Plane,
   alert: AlertTriangle,
+  upload: Upload,
+  scan: ScanLine,
 };
 
 const Icon = ({ id, color, size, strokeWidth, ...delegated }) => {

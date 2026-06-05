@@ -62,3 +62,22 @@ CREATE TABLE IF NOT EXISTS public.analysis_records (
 );
 
 ALTER TABLE public.analysis_records DISABLE ROW LEVEL SECURITY;
+
+
+-- ------------------------------------------------------------
+-- 表四：detection_records（图像识别记录，YOLO-World 开放词表）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.detection_records (
+    id           UUID       PRIMARY KEY DEFAULT gen_random_uuid(),    -- 识别记录唯一ID
+    image_name   VARCHAR,                                             -- 原图文件名
+    image_w      INTEGER,                                             -- 原图宽（px）
+    image_h      INTEGER,                                             -- 原图高（px）
+    zone         VARCHAR,                                             -- 可选，所属区域
+    classes      JSONB,                                               -- 本次使用的开放词表目标词列表
+    object_count INTEGER    DEFAULT 0,                                -- 检测到的目标总数
+    risk_count   INTEGER    DEFAULT 0,                                -- 风险目标数
+    detections   JSONB,                                               -- 检测结果数组（归一化坐标，同接口返回）
+    created_at   TIMESTAMP  DEFAULT NOW()                             -- 记录创建时间
+);
+
+ALTER TABLE public.detection_records DISABLE ROW LEVEL SECURITY;

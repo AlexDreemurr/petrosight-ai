@@ -14,8 +14,18 @@ import React, { useState, useRef } from "react";
 import styled from "styled-components";
 import { registerSensors, uploadExcel, analyze } from "../../../api";
 import Markdown from "../../Markdown/Markdown";
+import Icon from "../../Icon/Icon";
+import ImageDetectPanel from "./detect/ImageDetectPanel";
+
+const TABS = [
+  { key: "ingest", label: "数据接入", icon: "upload" },
+  { key: "ai", label: "AI 安全分析", icon: "analysis" },
+  { key: "image", label: "图像识别", icon: "scan" },
+];
 
 function AnalysisPage() {
+  const [tab, setTab] = useState("ingest");
+
   // 传感器注册
   const [regDrag, setRegDrag] = useState(false);
   const [registering, setRegistering] = useState(false);
@@ -95,8 +105,19 @@ function AnalysisPage() {
     <Page>
       <PageTitle>数据分析</PageTitle>
 
-      {/* 第一行：注册 + 上传快照 */}
-      <Row>
+      <TabBar>
+        {TABS.map((t) => (
+          <TabBtn key={t.key} data-active={tab === t.key} onClick={() => setTab(t.key)}>
+            <Icon id={t.icon} size={16} />
+            <span>{t.label}</span>
+          </TabBtn>
+        ))}
+      </TabBar>
+
+      {/* ===== 数据接入：注册 + 上传快照 ===== */}
+      {tab === "ingest" && (
+        <>
+          <Row>
         <Card>
           <CardTitle>① 传感器注册</CardTitle>
           <StepHint>上传传感器信息表（含 id、type、zone、lng、lat）。</StepHint>
@@ -224,8 +245,11 @@ function AnalysisPage() {
           </TagRow>
         </Card>
       )}
+        </>
+      )}
 
-      {/* 第二行：AI 分析（常驻） */}
+      {/* ===== AI 安全分析 ===== */}
+      {tab === "ai" && (
       <Card>
         <CardTitle>AI 安全分析</CardTitle>
         <StepHint>
@@ -285,6 +309,15 @@ function AnalysisPage() {
           </ReportBox>
         )}
       </Card>
+      )}
+
+      {/* ===== 图像识别 ===== */}
+      {tab === "image" && (
+        <Card>
+          <CardTitle>图像异常识别</CardTitle>
+          <ImageDetectPanel />
+        </Card>
+      )}
     </Page>
   );
 }
@@ -299,6 +332,39 @@ const Page = styled.div`
 const PageTitle = styled.h1`
   font-size: var(--font-h1);
   font-weight: 500;
+`;
+
+const TabBar = styled.div`
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  align-self: flex-start;
+`;
+
+const TabBtn = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 16px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-small);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+
+  &[data-active="true"] {
+    background: var(--color-primary);
+    color: #fff;
+  }
+  &[data-active="false"]:hover {
+    color: var(--text-secondary);
+  }
 `;
 
 const Row = styled.div`

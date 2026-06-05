@@ -50,3 +50,21 @@ export async function getRecords({ zone, severity, category, limit = 100 } = {})
 export async function getSensors() {
   return request("/api/sensors");
 }
+
+export async function getDetectModels() {
+  return request("/api/detect-models");
+}
+
+export async function detectImage(
+  file,
+  { classes = [], conf, imgsz, zone, model = "open" } = {}
+) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("model", model);
+  form.append("classes", JSON.stringify(classes)); // 英文目标词数组（仅开放词表用）
+  if (conf != null) form.append("conf", String(conf));
+  if (imgsz != null) form.append("imgsz", String(imgsz));
+  if (zone) form.append("zone", zone);
+  return request("/api/detect-image", { method: "POST", body: form });
+}

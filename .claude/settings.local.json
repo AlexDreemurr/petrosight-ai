@@ -15,7 +15,10 @@
       "Bash(python -X utf8 -c ' *)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
       "Bash(python -c \"import sys;print\\(sys.stdin.read\\(\\)\\)\")",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(python -c \"open\\('requirements.txt',encoding='ascii'\\).read\\(\\); print\\('requirements.txt is pure ASCII - pip OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(grep -v -E \"Ultralytics|YOLO|Python|torch|^\\\\s*$|Downloading|requirements|AMP|Setup\")"
     ]
   }
 }
