@@ -34,6 +34,14 @@ export async function analyze(userPrompt, dataSummary, range = {}) {
   });
 }
 
+export async function clearData(target) {
+  return request("/api/clear-data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+}
+
 export async function getHistory(limit = 50) {
   return request(`/api/history?limit=${limit}`);
 }

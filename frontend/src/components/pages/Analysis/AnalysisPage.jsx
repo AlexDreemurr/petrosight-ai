@@ -12,7 +12,7 @@
  */
 import React, { useState, useRef } from "react";
 import styled from "styled-components";
-import { registerSensors, uploadExcel, analyze } from "../../../api";
+import { registerSensors, uploadExcel, analyze, clearData } from "../../../api";
 import Markdown from "../../Markdown/Markdown";
 import Icon from "../../Icon/Icon";
 import ImageDetectPanel from "./detect/ImageDetectPanel";
@@ -27,6 +27,25 @@ const TABS = [
 
 function AnalysisPage() {
   const [tab, setTab] = useState("ingest");
+
+  // 调试：清空数据
+  const [clearing, setClearing] = useState("");
+  const [clearMsg, setClearMsg] = useState("");
+
+  async function handleClear(target) {
+    const label = target === "sensors" ? "传感器注册信息（含全部记录）" : "所有传感器数据";
+    if (!window.confirm(`确定清空${label}？此操作不可恢复。`)) return;
+    setClearMsg("");
+    setClearing(target);
+    try {
+      await clearData(target);
+      setClearMsg(`已清空${label}。`);
+    } catch (e) {
+      setClearMsg(`清空失败：${e.message}`);
+    } finally {
+      setClearing("");
+    }
+  }
 
   // 传感器注册
   const [regDrag, setRegDrag] = useState(false);
@@ -247,6 +266,29 @@ function AnalysisPage() {
           </TagRow>
         </Card>
       )}
+
+          {/* 调试：清空数据 */}
+          <Card>
+            <CardTitle>调试 · 清空数据</CardTitle>
+            <StepHint>仅用于调试，操作不可恢复。</StepHint>
+            <DangerRow>
+              <DangerBtn
+                type="button"
+                disabled={clearing}
+                onClick={() => handleClear("records")}
+              >
+                {clearing === "records" ? "清空中..." : "清空所有传感器数据"}
+              </DangerBtn>
+              <DangerBtn
+                type="button"
+                disabled={clearing}
+                onClick={() => handleClear("sensors")}
+              >
+                {clearing === "sensors" ? "清空中..." : "清空传感器注册信息"}
+              </DangerBtn>
+            </DangerRow>
+            {clearMsg && <OkMsg>{clearMsg}</OkMsg>}
+          </Card>
         </>
       )}
 
@@ -488,6 +530,31 @@ const OkMsg = styled.p`
 const StepHint = styled.p`
   font-size: var(--font-small);
   color: var(--text-muted);
+`;
+
+const DangerRow = styled.div`
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+`;
+
+const DangerBtn = styled.button`
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+  border-radius: 8px;
+  font-size: var(--font-small);
+  cursor: pointer;
+  transition: background 0.15s;
+
+  &:hover:not(:disabled) {
+    background: rgba(226, 75, 74, 0.12);
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 `;
 
 const SummaryGrid = styled.div`

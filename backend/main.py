@@ -535,6 +535,35 @@ async def upload_excel(file: UploadFile = File(...)):
     }
 
 
+class ClearRequest(BaseModel):
+    """清空数据请求。target: records（仅传感器记录）/ sensors（注册信息，会连带清空记录）。"""
+    target: str
+
+
+@app.post(
+    "/api/clear-data",
+    summary="清空数据（调试用）",
+    description="target=records 清空 sensor_records；target=sensors 清空 sensors（因外键会先清空记录）。",
+    tags=["数据上传"],
+    response_description='{"status":"ok","target":...}',
+)
+def clear_data(req: ClearRequest):
+    """清空传感器记录或注册信息（调试用）。"""
+    t = req.target
+    if t not in ("records", "sensors"):
+        raise HTTPException(status_code=400, detail="target 必须为 records 或 sensors")
+    try:
+        # 先删子表记录（外键依赖 sensors）
+        supabase.table("sensor_records").delete().neq(
+            "id", "00000000-0000-0000-0000-000000000000"
+        ).execute()
+        if t == "sensors":
+            supabase.table("sensors").delete().neq("id", "__none__").execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"清空失败：{e}")
+    return {"status": "ok", "target": t}
+
+
 class AnalyzeRequest(BaseModel):
     """
     AI 分析请求体。
