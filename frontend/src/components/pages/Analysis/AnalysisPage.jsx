@@ -16,11 +16,13 @@ import { registerSensors, uploadExcel, analyze } from "../../../api";
 import Markdown from "../../Markdown/Markdown";
 import Icon from "../../Icon/Icon";
 import ImageDetectPanel from "./detect/ImageDetectPanel";
+import VideoDetectPanel from "./detect/VideoDetectPanel";
 
 const TABS = [
   { key: "ingest", label: "数据接入", icon: "upload" },
   { key: "ai", label: "AI 安全分析", icon: "analysis" },
   { key: "image", label: "图像识别", icon: "scan" },
+  { key: "video", label: "视频识别", icon: "video" },
 ];
 
 function AnalysisPage() {
@@ -316,6 +318,14 @@ function AnalysisPage() {
         <Card>
           <CardTitle>图像异常识别</CardTitle>
           <ImageDetectPanel />
+        </Card>
+      )}
+
+      {/* ===== 视频识别 ===== */}
+      {tab === "video" && (
+        <Card>
+          <CardTitle>视频异常识别</CardTitle>
+          <VideoDetectPanel />
         </Card>
       )}
     </Page>

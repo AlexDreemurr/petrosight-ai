@@ -36,6 +36,7 @@ import {
   AlertTriangle,
   Upload,
   ScanLine,
+  Video,
 } from "lucide-react";
 
 const icons = {
@@ -59,6 +60,7 @@ const icons = {
   alert: AlertTriangle,
   upload: Upload,
   scan: ScanLine,
+  video: Video,
 };
 
 const Icon = ({ id, color, size, strokeWidth, ...delegated }) => {

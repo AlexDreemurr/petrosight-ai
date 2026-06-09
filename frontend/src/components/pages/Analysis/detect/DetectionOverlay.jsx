@@ -23,7 +23,7 @@ function DetectionOverlay({ image, detections = [], colorMap = {}, activeId, onH
         <BoundingBox
           key={d.id}
           det={d}
-          color={colorMap[d.label]}
+          color={d.color || colorMap[d.label]}
           active={activeId === d.id}
           onHover={onHover}
         />

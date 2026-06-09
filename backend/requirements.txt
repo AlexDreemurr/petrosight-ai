@@ -1,5 +1,7 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
+# numpy 必须 < 2.0：ultralytics 8.3.0 不兼容 numpy 2.x
+numpy==1.26.4
 pandas==2.2.3
 openpyxl==3.1.5
 supabase==2.10.0
@@ -11,3 +13,8 @@ python-multipart==0.0.12
 # ENABLE_YOLO=true. Render free tier may not handle it; set ENABLE_YOLO=false there.
 ultralytics==8.3.0
 pillow==10.4.0
+opencv-python-headless==4.10.0.84
+# 目标追踪（ByteTrack）依赖：线性分配
+lapx==0.5.11
+# SAHI 切片推理：密集/小目标（如远处密集车流）召回增强
+sahi==0.11.18

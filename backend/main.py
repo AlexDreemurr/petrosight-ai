@@ -64,18 +64,10 @@ DETECT_MODELS = {
         "weights": YOLO_OPEN_MODEL,
         "open_vocab": True,
     },
-    "helmet": {
-        "name": "安全帽检测 (YOLOv8)",
-        "weights": os.getenv("HELMET_MODEL_PATH", "weights/helmet.pt"),
-        "open_vocab": False,
-        "label_cn": {
-            "helmet": "安全帽", "head": "未戴安全帽", "person": "人员",
-            "no-helmet": "未戴安全帽", "no_helmet": "未戴安全帽",
-            "without helmet": "未戴安全帽", "motorcycle": "摩托车",
-        },
-        "risk": {"head", "no-helmet", "no_helmet", "without helmet"},
-    },
 }
+
+# 安全帽权重路径（仅供「安全帽合规检测」管线内部使用，不作为单独模型暴露）
+HELMET_MODEL_PATH = os.getenv("HELMET_MODEL_PATH", "weights/helmet.pt")
 
 _model_cache = {}  # model_id -> 已加载模型
 
@@ -107,6 +99,171 @@ def get_detect_model(model_id: str):
         raise RuntimeError(f"模型加载失败（{weights}）：{e}")
     _model_cache[model_id] = model
     return model, cfg
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 安全帽合规检测（双模型 + 头部区域空间匹配）配置
+# ──────────────────────────────────────────────────────────────────────────
+PERSON_MODEL_PATH = os.getenv("PERSON_MODEL_PATH", "yolov8n.pt")  # 通用 person 检测
+PERSON_CONF = 0.25       # person 置信度阈值
+HELMET_CONF = 0.35       # helmet 阈值（略高，少误检）
+HEAD_FRACTION = 0.32     # 头部区域占 person 框高度比例（顶部）
+HEAD_PAD_X = 0.0         # 头部区域水平内缩比例
+
+# 道路拥堵分析：用通用 COCO 模型检测车辆类。
+# 默认 yolov8s（比 n 召回更好，密集/远处车辆漏检更少）；可用环境变量换 yolov8m 进一步提升。
+TRAFFIC_MODEL_PATH = os.getenv("TRAFFIC_MODEL_PATH", "yolov8s.pt")
+TRAFFIC_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle"}
+TRAFFIC_LABEL_CN = {
+    "car": "汽车", "truck": "卡车", "bus": "公交车",
+    "motorcycle": "摩托车", "bicycle": "自行车",
+}
+
+
+def assess_congestion(n: int, coverage: float):
+    """根据车辆数量与画面占比判定拥堵等级。返回 (level, level_cn)。"""
+    if n >= 12 or coverage > 0.35:
+        return "congested", "拥堵"
+    if n <= 5 and coverage < 0.15:
+        return "smooth", "畅通"
+    return "slow", "缓行"
+
+
+def load_yolo_weights(path: str):
+    """通用 YOLO 权重懒加载缓存（用于 person 模型等非注册表模型）。"""
+    key = "_w:" + path
+    if key in _model_cache:
+        return _model_cache[key]
+    try:
+        from ultralytics import YOLO
+        model = YOLO(path)  # 文件不存在时 ultralytics 会尝试自动下载官方权重
+    except ImportError as e:
+        raise RuntimeError(f"未安装 ultralytics 依赖：{e}")
+    except Exception as e:
+        raise RuntimeError(f"模型加载失败（{path}）：{e}")
+    _model_cache[key] = model
+    return model
+
+
+def get_sahi_model(path: str):
+    """懒加载 SAHI 检测模型（包装 ultralytics 权重），缓存。失败抛 RuntimeError。"""
+    key = "_sahi:" + path
+    if key in _model_cache:
+        return _model_cache[key]
+    try:
+        from sahi import AutoDetectionModel
+    except Exception as e:
+        raise RuntimeError(f"未安装 sahi 依赖：{e}")
+    model = None
+    for mtype in ("ultralytics", "yolov8"):  # 兼容不同 sahi 版本
+        try:
+            model = AutoDetectionModel.from_pretrained(
+                model_type=mtype, model_path=path,
+                confidence_threshold=0.05, device="cpu",
+            )
+            break
+        except Exception:
+            continue
+    if model is None:
+        raise RuntimeError(f"SAHI 模型加载失败（{path}）")
+    _model_cache[key] = model
+    return model
+
+
+def sahi_detect(sahi_model, img_np, conf, slice_size=640, overlap=0.2):
+    """SAHI 切片推理，返回与 extract_boxes 同构的列表：[{box(归一化xyxy), conf, label, tid:None}]。"""
+    from sahi.predict import get_sliced_prediction
+    res = get_sliced_prediction(
+        img_np, sahi_model,
+        slice_height=slice_size, slice_width=slice_size,
+        overlap_height_ratio=overlap, overlap_width_ratio=overlap,
+        verbose=0,
+    )
+    h, w = img_np.shape[:2]
+    out = []
+    for o in res.object_prediction_list:
+        score = float(o.score.value)
+        if score < conf:
+            continue
+        x1, y1, x2, y2 = o.bbox.to_xyxy()
+        out.append({
+            "box": [x1 / w, y1 / h, x2 / w, y2 / h],
+            "conf": round(score, 2),
+            "label": str(o.category.name),
+            "tid": None,
+        })
+    return out
+
+
+def extract_boxes(res, want_label=None, min_conf=0.0):
+    """从一次推理/追踪结果提取归一化框：[{box, conf, label, tid}]。
+
+    tid 为追踪 id（来自 model.track），普通 predict 时为 None。
+    """
+    out = []
+    boxes = getattr(res, "boxes", None)
+    if boxes is None or len(boxes) == 0:
+        return out
+    names = res.names
+    xyxyn = boxes.xyxyn.tolist()
+    confs = boxes.conf.tolist()
+    cls = [int(i) for i in boxes.cls.tolist()]
+    ids = getattr(boxes, "id", None)
+    id_list = ids.tolist() if ids is not None else None
+    for i, (bb, cf, ci) in enumerate(zip(xyxyn, confs, cls)):
+        if cf < min_conf:
+            continue
+        if isinstance(names, dict):
+            label = names.get(ci, names.get(str(ci), str(ci)))
+        elif isinstance(names, (list, tuple)) and 0 <= ci < len(names):
+            label = names[ci]
+        else:
+            label = str(ci)
+        if want_label and str(label).lower() != want_label:
+            continue
+        tid = int(id_list[i]) if (id_list is not None and i < len(id_list) and id_list[i] is not None) else None
+        out.append({"box": [float(x) for x in bb], "conf": round(float(cf), 2),
+                    "label": str(label), "tid": tid})
+    return out
+
+
+def _norm_xywh(bb):
+    x1, y1, x2, y2 = bb
+    return {"x": round(max(0.0, x1), 4), "y": round(max(0.0, y1), 4),
+            "w": round(max(0.0, x2 - x1), 4), "h": round(max(0.0, y2 - y1), 4)}
+
+
+def _head_region(bb, frac=HEAD_FRACTION, pad_x=HEAD_PAD_X):
+    x1, y1, x2, y2 = bb
+    w, h = x2 - x1, y2 - y1
+    return (x1 + pad_x * w, y1, x2 - pad_x * w, y1 + frac * h)
+
+
+def match_a_without_b(persons, items, frac=HEAD_FRACTION, pad_x=HEAD_PAD_X):
+    """把 items（如 helmet）按“中心点落在 person 头部区域”匹配给 person。
+
+    返回 (person_match, worn_items)：
+      person_match: {person_idx: item_idx}（该人头部命中的物品，合规）
+      worn_items:   set(item_idx)（被某人头部匹配上的物品，如戴着的帽）
+    一个物品至多配给一个 person（多候选取离头部区域中心最近者）。
+    """
+    person_match, worn = {}, set()
+    for hi, it in enumerate(items):
+        b = it["box"]
+        hx, hy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        best, best_d = None, 1e9
+        for pi, ps in enumerate(persons):
+            hr = _head_region(ps["box"], frac, pad_x)
+            if hr[0] <= hx <= hr[2] and hr[1] <= hy <= hr[3]:
+                cx, cy = (hr[0] + hr[2]) / 2, (hr[1] + hr[3]) / 2
+                d = (hx - cx) ** 2 + (hy - cy) ** 2
+                if d < best_d:
+                    best_d, best = d, pi
+        if best is not None:
+            worn.add(hi)
+            person_match.setdefault(best, hi)
+    return person_match, worn
+
 
 app = FastAPI(
     title="PetroSight AI 后端接口",
@@ -527,6 +684,170 @@ async def analyze(req: AnalyzeRequest):
     return {"report": ai_report}
 
 
+class TargetParseRequest(BaseModel):
+    """自然语言 → 检测目标 请求体。text 为用户的自然语言描述。"""
+    text: str
+
+
+@app.post(
+    "/api/parse-detect-targets",
+    summary="自然语言解析为检测目标（DeepSeek）",
+    description=(
+        "把用户的自然语言描述交给 DeepSeek，转成一组简洁英文目标词，"
+        "供 YOLO-World 开放词表检测使用。仅返回目标词数组。"
+    ),
+    tags=["图像识别"],
+    response_description='{"task":"open|helmet_compliance","classes":[...],"text":原文}',
+)
+async def parse_detect_targets(req: TargetParseRequest):
+    """
+    用 DeepSeek 判断检测任务并抽取目标：
+      - 若用户意图是“检查工人是否佩戴安全帽（PPE 合规）”→ task=helmet_compliance
+      - 否则 → task=open，并给出开放词表英文目标词数组
+
+    Raises:
+        HTTPException 400: 输入为空
+        HTTPException 500: DEEPSEEK_API_KEY 未配置
+        HTTPException 502/504: DeepSeek 接口错误 / 超时
+    """
+    import json
+    import re
+
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="请输入自然语言描述")
+    if not DEEPSEEK_API_KEY:
+        raise HTTPException(status_code=500, detail="DeepSeek API Key 未配置")
+
+    prompt = (
+        "你是石化厂区视觉检测的任务规划器。判断用户意图并只输出一个 JSON 对象：\n"
+        "1) 若想检查【工人是否佩戴安全帽 / 安全帽合规 / 有没有人没戴安全帽】，"
+        '输出 {"task":"helmet_compliance"}。\n'
+        "2) 若想分析【道路车流 / 是否拥堵 / 交通是否堵车】，"
+        '输出 {"task":"traffic"}。\n'
+        "3) 否则输出 "
+        '{"task":"open","classes":[英文目标词...]}，'
+        "classes 为简洁的小写英文名词（适合 YOLO-World 开放词表），可含必要同义词。\n"
+        "不要输出任何解释或多余文字。\n"
+        '示例："工人有没有戴安全帽" -> {"task":"helmet_compliance"}\n'
+        '示例："这条路堵不堵" -> {"task":"traffic"}\n'
+        '示例："看看有没有车和卡车" -> {"task":"open","classes":["car","truck"]}\n'
+        f"用户需求：{text}"
+    )
+
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200,
+                    "temperature": 0,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="AI 解析超时，请重试")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"AI 接口错误: {str(e)}")
+
+    content = resp.json()["choices"][0]["message"]["content"]
+    task = "open"
+    classes = []
+    m = re.search(r"\{.*\}", content, re.S)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if obj.get("task") in ("helmet_compliance", "traffic"):
+                task = obj["task"]
+            seen = set()
+            for c in obj.get("classes", []) or []:
+                s = str(c).strip().lower()
+                if s and s not in seen:
+                    seen.add(s)
+                    classes.append(s)
+        except Exception:
+            pass
+
+    return {"task": task, "classes": classes, "text": text}
+
+
+class SummarizeRequest(BaseModel):
+    """检测结果摘要请求：task=helmet_compliance|open，stats 为统计数据。"""
+    task: str
+    stats: dict = {}
+
+
+@app.post(
+    "/api/summarize-detection",
+    summary="检测结果一句话摘要（DeepSeek）",
+    description="把检测统计交给 DeepSeek，生成一句简短中文摘要。失败返回空串，由前端兜底。",
+    tags=["图像识别"],
+    response_description='{"summary": "一句话摘要"}',
+)
+async def summarize_detection(req: SummarizeRequest):
+    """生成检测结果的一句话中文摘要（容错：任何异常返回空串）。"""
+    if not DEEPSEEK_API_KEY:
+        return {"summary": ""}
+
+    s = req.stats or {}
+    if req.task == "helmet_compliance":
+        info = (
+            f"安全帽合规检测：共 {s.get('person_count', 0)} 人，"
+            f"合规 {s.get('compliant_count', 0)} 人，"
+            f"未佩戴 {s.get('violation_count', 0)} 人。"
+        )
+        ask = "请用一句简短中文总结现场安全帽佩戴情况，点明是否有人未佩戴及人数。"
+    elif req.task == "traffic":
+        counts = s.get("counts", {})
+        uniq = s.get("unique_total")
+        peak = f"峰值同时 {s.get('total', 0)} 辆" + (
+            f"、累计经过约 {uniq} 辆" if uniq is not None else ""
+        )
+        info = (
+            f"道路拥堵分析：{peak}，画面占比 "
+            f"{round(s.get('coverage', 0) * 100)}%，判定 {s.get('level_cn', '')}。"
+            "明细：" + ("、".join(f"{k}{v}" for k, v in counts.items()) or "无")
+        )
+        ask = "请用一句简短中文总结道路车流与是否会造成拥堵，给出拥堵等级。"
+    else:
+        counts = s.get("counts", {})
+        info = "目标检测统计：" + (
+            "、".join(f"{k}={v}" for k, v in counts.items()) or "无"
+        )
+        ask = "请用一句简短中文总结检测到的物体及数量。"
+
+    prompt = f"{info}\n{ask}\n只输出一句话，不要 markdown、不要解释。"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 120,
+                    "temperature": 0.3,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+        summary = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        summary = ""
+    return {"summary": summary}
+
+
 @app.get(
     "/api/history",
     summary="获取历史 AI 分析记录",
@@ -825,6 +1146,336 @@ async def detect_image(
     }
 
 
+@app.post(
+    "/api/detect-video",
+    summary="视频识别（按时间采样逐帧检测）",
+    description=(
+        "上传视频，按时间间隔采样若干帧逐帧检测，返回带时间戳的检测时间线，"
+        "前端在播放原视频时按进度叠加检测框（不重编码视频）。支持开放词表与安全帽合规。"
+    ),
+    tags=["图像识别"],
+    response_description="{compliance, fps, duration, interval, sampled, frames[], stats}",
+)
+async def detect_video(
+    file: UploadFile = File(...),
+    model: str = Form("open"),
+    classes: str = Form("[]"),
+    conf: float = Form(0.25),
+    imgsz: int = Form(640),
+    helmet_conf: float = Form(0.6),
+    use_sahi: bool = Form(False),
+):
+    """对视频按时间采样逐帧检测，返回检测时间线（归一化坐标）。use_sahi 仅对 traffic 生效。"""
+    import json
+    import math
+    import tempfile
+
+    if not ENABLE_YOLO:
+        raise HTTPException(status_code=503, detail="图像识别服务未启用（ENABLE_YOLO=false）")
+    if not file.filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
+        raise HTTPException(status_code=400, detail="仅支持 .mp4/.avi/.mov/.mkv/.webm 视频")
+
+    try:
+        import cv2
+        import numpy as np
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"未安装 opencv 依赖：{e}")
+
+    is_compliance = model == "helmet_compliance"
+    is_traffic = model == "traffic"
+    if model not in ("open", "helmet_compliance", "traffic"):
+        raise HTTPException(status_code=400, detail=f"视频识别支持 open / helmet_compliance / traffic，收到：{model}")
+
+    # 解析开放词表目标（仅 open 用）
+    target_classes = []
+    if model == "open":
+        try:
+            target_classes = [str(c).strip() for c in (json.loads(classes) or []) if str(c).strip()]
+        except Exception:
+            target_classes = []
+        if not target_classes:
+            target_classes = list(DEFAULT_CLASSES)
+
+    # 写临时文件供 cv2 读取
+    suffix = os.path.splitext(file.filename)[1] or ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(await file.read())
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="视频解析失败")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        interval_s = 0.4          # 采样间隔（秒）
+        max_samples = 80          # 最多采样帧数（控制耗时）
+        step = max(1, int(round(fps * interval_s)))
+        if total > 0:
+            step = max(step, math.ceil(total / max_samples))
+        isz = max(320, min(1536, int(imgsz)))
+
+        # 加载模型
+        try:
+            if is_compliance:
+                if not os.path.exists(HELMET_MODEL_PATH):
+                    raise RuntimeError(f"安全帽权重未就绪：{HELMET_MODEL_PATH}")
+                person_net = load_yolo_weights(PERSON_MODEL_PATH)
+                helmet_net = load_yolo_weights(HELMET_MODEL_PATH)
+            elif is_traffic:
+                if use_sahi:
+                    traffic_sahi = get_sahi_model(TRAFFIC_MODEL_PATH)
+                else:
+                    traffic_net = load_yolo_weights(TRAFFIC_MODEL_PATH)
+            else:
+                open_net, _ = get_detect_model("open")
+                open_net.set_classes(target_classes)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=f"图像识别服务不可用：{e}")
+
+        frames = []
+        idx, processed = 0, 0
+        while processed < max_samples:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+            if idx % step == 0:
+                rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                t = round(idx / fps, 2)
+                persist = processed > 0  # 同一请求内保持追踪状态，新请求首帧重置
+                if is_compliance:
+                    p_res = person_net.track(rgb, conf=PERSON_CONF, imgsz=isz,
+                                             persist=persist, tracker="bytetrack.yaml", verbose=False)[0]
+                    h_res = helmet_net.predict(rgb, conf=float(helmet_conf), imgsz=isz, verbose=False)[0]
+                    persons = extract_boxes(p_res, want_label="person", min_conf=PERSON_CONF)
+                    helmets = extract_boxes(h_res, want_label="helmet", min_conf=float(helmet_conf))
+                    pmatch, worn = match_a_without_b(persons, helmets)
+                    dets = []
+                    for pi, ps in enumerate(persons):
+                        ok = pi in pmatch
+                        dets.append({"role": "person", "label": "person",
+                                     "label_cn": "合规人员" if ok else "未戴安全帽人员",
+                                     "confidence": ps["conf"], "compliant": ok,
+                                     "risk": not ok, "tid": ps.get("tid"),
+                                     "box": _norm_xywh(ps["box"])})
+                    for hi, hm in enumerate(helmets):
+                        dets.append({"role": "helmet", "label": "helmet",
+                                     "label_cn": "安全帽" + ("" if hi in worn else "(未佩戴)"),
+                                     "confidence": hm["conf"], "worn": hi in worn,
+                                     "risk": False, "box": _norm_xywh(hm["box"])})
+                    frames.append({"t": t, "dets": dets})
+                elif is_traffic:
+                    if use_sahi:
+                        raw = sahi_detect(traffic_sahi, rgb, float(conf))
+                    else:
+                        res = traffic_net.track(rgb, conf=float(conf), imgsz=isz,
+                                                persist=persist, tracker="bytetrack.yaml", verbose=False)[0]
+                        raw = extract_boxes(res, min_conf=float(conf))
+                    dets, cov = [], 0.0
+                    for d in raw:
+                        low = d["label"].lower()
+                        if low not in TRAFFIC_CLASSES:
+                            continue
+                        box = _norm_xywh(d["box"])
+                        cov += box["w"] * box["h"]
+                        dets.append({"label": low,
+                                     "label_cn": TRAFFIC_LABEL_CN.get(low, low),
+                                     "confidence": d["conf"], "risk": False,
+                                     "tid": d.get("tid"), "box": box})
+                    frames.append({"t": t, "dets": dets, "coverage": round(min(1.0, cov), 3)})
+                else:
+                    res = open_net.predict(rgb, conf=float(conf), imgsz=isz, verbose=False)[0]
+                    raw = extract_boxes(res, min_conf=float(conf))
+                    dets = []
+                    for d in raw:
+                        low = d["label"].lower()
+                        dets.append({"label": d["label"],
+                                     "label_cn": LABEL_CN.get(low, d["label"]),
+                                     "confidence": d["conf"],
+                                     "risk": low in RISK_CLASSES,
+                                     "box": _norm_xywh(d["box"])})
+                    frames.append({"t": t, "dets": dets})
+                processed += 1
+            idx += 1
+        cap.release()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+    # 聚合统计
+    if is_compliance:
+        # 优先用追踪 id 做「唯一人数」；无 id 时退回单帧峰值
+        person_tids = {d["tid"] for f in frames for d in f["dets"]
+                       if d.get("role") == "person" and d.get("tid") is not None}
+        viol_tids = {d["tid"] for f in frames for d in f["dets"]
+                     if d.get("role") == "person" and d.get("risk") and d.get("tid") is not None}
+        max_persons = max((sum(1 for d in f["dets"] if d.get("role") == "person") for f in frames), default=0)
+        max_viol = max((sum(1 for d in f["dets"] if d.get("role") == "person" and d.get("risk")) for f in frames), default=0)
+        unique_persons = len(person_tids) if person_tids else max_persons
+        unique_viol = len(viol_tids) if person_tids else max_viol
+        stats = {
+            "person_count": unique_persons,
+            "violation_count": unique_viol,
+            "compliant_count": max(0, unique_persons - unique_viol),
+            "peak_persons": max_persons,
+            "tracked": bool(person_tids),
+        }
+    elif is_traffic:
+        max_total = max((len(f["dets"]) for f in frames), default=0)
+        max_cov = max((f.get("coverage", 0.0) for f in frames), default=0.0)
+        level, level_cn = assess_congestion(max_total, max_cov)
+        # 唯一车辆数（按 track id 去重）+ 各类别唯一数
+        veh_tids = {d["tid"] for f in frames for d in f["dets"] if d.get("tid") is not None}
+        per_label_tids = {}
+        counts_simul = {}  # 单帧峰值（无 id 兜底）
+        for f in frames:
+            per = {}
+            for d in f["dets"]:
+                per[d["label_cn"]] = per.get(d["label_cn"], 0) + 1
+                if d.get("tid") is not None:
+                    per_label_tids.setdefault(d["label_cn"], set()).add(d["tid"])
+            for k, v in per.items():
+                counts_simul[k] = max(counts_simul.get(k, 0), v)
+        if veh_tids:
+            counts = {k: len(v) for k, v in per_label_tids.items()}
+            unique_total = len(veh_tids)
+        else:
+            counts = counts_simul
+            unique_total = max_total
+        stats = {
+            "total": max_total,            # 单帧峰值（用于拥堵判定）
+            "unique_total": unique_total,  # 累计经过车辆数
+            "coverage": round(max_cov, 3),
+            "level": level,
+            "level_cn": level_cn,
+            "counts": counts,
+            "tracked": bool(veh_tids),
+        }
+    else:
+        counts = {}
+        for f in frames:
+            per = {}
+            for d in f["dets"]:
+                k = d["label_cn"]
+                per[k] = per.get(k, 0) + 1
+            for k, v in per.items():
+                counts[k] = max(counts.get(k, 0), v)  # 取各类别同帧最大值
+        stats = {"counts": counts}
+
+    return {
+        "task": "helmet_compliance" if is_compliance else ("traffic" if is_traffic else "open"),
+        "compliance": is_compliance,
+        "traffic": is_traffic,
+        "fps": round(fps, 2),
+        "duration": round(total / fps, 2) if total else None,
+        "interval": round(step / fps, 2),
+        "sampled": len(frames),
+        "frames": frames,
+        "stats": stats,
+    }
+
+
+@app.post(
+    "/api/detect-traffic",
+    summary="道路拥堵分析（车辆检测 + 拥堵判定）",
+    description=(
+        "用通用模型检测画面中的车辆（汽车/卡车/公交/摩托/自行车），"
+        "按车辆数量与画面占比判定 畅通/缓行/拥堵，返回归一化检测框并落库。"
+    ),
+    tags=["图像识别"],
+    response_description="{traffic, level, level_cn, total, coverage, counts, detections, record_id}",
+)
+async def detect_traffic(
+    file: UploadFile = File(...),
+    imgsz: int = Form(640),
+    conf: float = Form(0.25),
+    use_sahi: bool = Form(False),
+    zone: Optional[str] = Form(None),
+):
+    """检测道路车辆并评估是否拥堵。use_sahi=True 时用切片推理增强密集小目标召回。"""
+    if not ENABLE_YOLO:
+        raise HTTPException(status_code=503, detail="图像识别服务未启用（ENABLE_YOLO=false）")
+    if not file.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        raise HTTPException(status_code=400, detail="仅支持 .jpg / .jpeg / .png 图片")
+
+    from PIL import Image
+    contents = await file.read()
+    try:
+        img = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片解析失败：{e}")
+    w, h = img.size
+
+    try:
+        import numpy as np
+        arr = np.array(img)
+        if use_sahi:
+            sm = get_sahi_model(TRAFFIC_MODEL_PATH)
+            raw = sahi_detect(sm, arr, float(conf))
+        else:
+            net = load_yolo_weights(TRAFFIC_MODEL_PATH)
+            isz = max(320, min(1536, int(imgsz)))
+            res = net.predict(arr, conf=float(conf), imgsz=isz, verbose=False)[0]
+            raw = extract_boxes(res, min_conf=float(conf))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=f"图像识别服务不可用：{e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"推理失败：{e}")
+    detections, counts, coverage = [], {}, 0.0
+    for i, d in enumerate(raw):
+        low = d["label"].lower()
+        if low not in TRAFFIC_CLASSES:
+            continue
+        box = _norm_xywh(d["box"])
+        coverage += box["w"] * box["h"]
+        counts[low] = counts.get(low, 0) + 1
+        detections.append({
+            "id": i,
+            "label": low,
+            "label_cn": TRAFFIC_LABEL_CN.get(low, low),
+            "confidence": d["conf"],
+            "risk": False,
+            "box": box,
+        })
+
+    total = len(detections)
+    coverage = round(min(1.0, coverage), 3)
+    level, level_cn = assess_congestion(total, coverage)
+    counts_cn = {TRAFFIC_LABEL_CN.get(k, k): v for k, v in counts.items()}
+
+    record_id = None
+    try:
+        inserted = supabase.table("detection_records").insert({
+            "image_name": file.filename,
+            "image_w": w,
+            "image_h": h,
+            "zone": zone,
+            "classes": sorted(counts.keys()),
+            "object_count": total,
+            "risk_count": total if level == "congested" else 0,
+            "detections": detections,
+        }).execute()
+        if inserted.data:
+            record_id = inserted.data[0].get("id")
+    except Exception:
+        record_id = None
+
+    return {
+        "image": {"width": w, "height": h, "name": file.filename},
+        "traffic": True,
+        "use_sahi": use_sahi,
+        "level": level,
+        "level_cn": level_cn,
+        "total": total,
+        "coverage": coverage,
+        "counts": counts_cn,
+        "detections": detections,
+        "record_id": record_id,
+    }
+
+
 @app.get(
     "/api/detect-models",
     summary="获取可用的图像识别模型列表",
@@ -854,3 +1505,134 @@ def list_detect_models():
             "note": note,
         })
     return out
+
+
+@app.post(
+    "/api/detect-helmet-compliance",
+    summary="安全帽合规检测（人+帽组合判定）",
+    description=(
+        "双模型：通用模型检测 person，专用模型检测 helmet，再按“helmet 是否落在 person "
+        "头部区域”判定每个人是否佩戴安全帽。返回归一化结果并落库。"
+    ),
+    tags=["图像识别"],
+    response_description="persons（含 compliant）+ helmets（含 worn）+ 统计 + record_id",
+)
+async def detect_helmet_compliance(
+    file: UploadFile = File(...),
+    imgsz: int = Form(640),
+    helmet_conf: float = Form(0.6),
+    zone: Optional[str] = Form(None),
+):
+    """检测画面中未佩戴安全帽的人员。
+
+    helmet_conf 默认 0.6：该专用权重会把裸头误检成 helmet（约 0.5 置信度），
+    阈值取高可滤掉这类误报、避免把没戴帽的人误判为合规。可由前端调节。
+    """
+    if not ENABLE_YOLO:
+        raise HTTPException(status_code=503, detail="图像识别服务未启用（ENABLE_YOLO=false）")
+    if not file.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        raise HTTPException(status_code=400, detail="仅支持 .jpg / .jpeg / .png 图片")
+
+    from PIL import Image
+    contents = await file.read()
+    try:
+        img = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片解析失败：{e}")
+    w, h = img.size
+
+    # 加载两个模型
+    if not os.path.exists(HELMET_MODEL_PATH):
+        raise HTTPException(
+            status_code=503,
+            detail=f"安全帽权重未就绪：{HELMET_MODEL_PATH}，请放置 best.pt。",
+        )
+    try:
+        person_net = load_yolo_weights(PERSON_MODEL_PATH)
+        helmet_net = load_yolo_weights(HELMET_MODEL_PATH)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=f"图像识别服务不可用：{e}")
+
+    try:
+        import numpy as np
+        arr = np.array(img)
+        isz = max(320, min(1536, int(imgsz)))
+        hconf = max(0.1, min(0.9, float(helmet_conf)))
+        p_res = person_net.predict(arr, conf=PERSON_CONF, imgsz=isz, verbose=False)[0]
+        h_res = helmet_net.predict(arr, conf=hconf, imgsz=isz, verbose=False)[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"推理失败：{e}")
+
+    persons = extract_boxes(p_res, want_label="person", min_conf=PERSON_CONF)
+    helmets = extract_boxes(h_res, want_label="helmet", min_conf=hconf)
+
+    person_match, worn = match_a_without_b(persons, helmets)
+
+    persons_out = []
+    for pi, ps in enumerate(persons):
+        compliant = pi in person_match
+        persons_out.append({
+            "id": pi,
+            "compliant": compliant,
+            "confidence": ps["conf"],
+            "matched_helmet_id": person_match.get(pi),
+            "box": _norm_xywh(ps["box"]),
+        })
+    helmets_out = []
+    for hi, hm in enumerate(helmets):
+        helmets_out.append({
+            "id": hi,
+            "confidence": hm["conf"],
+            "worn": hi in worn,
+            "box": _norm_xywh(hm["box"]),
+        })
+
+    violation_count = sum(1 for p in persons_out if not p["compliant"])
+    compliant_count = len(persons_out) - violation_count
+
+    # 落库（复用 detection_records；detections 合并 person/helmet，带 role）
+    record_id = None
+    try:
+        merged = []
+        for p in persons_out:
+            merged.append({
+                "role": "person",
+                "label": "person",
+                "label_cn": "合规人员" if p["compliant"] else "未戴安全帽人员",
+                "compliant": p["compliant"],
+                "confidence": p["confidence"],
+                "box": p["box"],
+            })
+        for hm in helmets_out:
+            merged.append({
+                "role": "helmet",
+                "label": "helmet",
+                "label_cn": "安全帽" + ("" if hm["worn"] else "(未佩戴)"),
+                "worn": hm["worn"],
+                "confidence": hm["confidence"],
+                "box": hm["box"],
+            })
+        inserted = supabase.table("detection_records").insert({
+            "image_name": file.filename,
+            "image_w": w,
+            "image_h": h,
+            "zone": zone,
+            "classes": ["person", "helmet"],
+            "object_count": len(persons_out),
+            "risk_count": violation_count,
+            "detections": merged,
+        }).execute()
+        if inserted.data:
+            record_id = inserted.data[0].get("id")
+    except Exception:
+        record_id = None
+
+    return {
+        "image": {"width": w, "height": h, "name": file.filename},
+        "person_count": len(persons_out),
+        "compliant_count": compliant_count,
+        "violation_count": violation_count,
+        "persons": persons_out,
+        "helmets": helmets_out,
+        "record_id": record_id,
+    }

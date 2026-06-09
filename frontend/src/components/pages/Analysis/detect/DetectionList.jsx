@@ -21,6 +21,7 @@ function DetectionList({ detections = [], colorMap = {}, activeId, onHover }) {
     <List>
       {detections.map((d) => {
         const color =
+          d.color ||
           colorMap[d.label] ||
           (d.risk ? "var(--color-danger)" : "var(--color-secondary)");
         return (

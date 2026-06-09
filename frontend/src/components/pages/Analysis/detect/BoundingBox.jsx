@@ -30,7 +30,8 @@ function BoundingBox({ det, color, active, onHover }) {
       onMouseLeave={() => onHover?.(null)}
     >
       <Label>
-        {det.label_cn} {Math.round(det.confidence * 100)}%
+        {det.label_cn}
+        {det.tid != null ? ` #${det.tid}` : ""} {Math.round(det.confidence * 100)}%
       </Label>
     </Box>
   );
