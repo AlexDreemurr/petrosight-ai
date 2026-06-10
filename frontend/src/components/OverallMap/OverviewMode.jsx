@@ -12,8 +12,9 @@ import React from "react";
 import styled from "styled-components";
 import AlertPin from "./AlertPin";
 import DevicePopup from "./DevicePopup";
+import { percentToLngLat } from "../../data/geo";
 
-function OverviewMode({ alerts = [] }) {
+function OverviewMode({ alerts = [], onHover }) {
   const [active, setActive] = React.useState(null);
 
   // alerts 已是每个传感器的最新状态（一传感器一条），这里只取异常的作为红/黄针。
@@ -22,9 +23,19 @@ function OverviewMode({ alerts = [] }) {
     [alerts]
   );
 
+  // 鼠标在底图上移动 → 换算经纬度上报；移出则清空
+  const handleMove = (e) => {
+    if (!onHover) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * 100;
+    const y = ((e.clientY - r.top) / r.height) * 100;
+    onHover(percentToLngLat(x, y));
+  };
+  const handleLeave = () => onHover?.(null);
+
   return (
-    <Stage>
-      <BaseMap src="/map_img/factory.png" alt="厂区俯视图" />
+    <Stage onMouseMove={handleMove} onMouseLeave={handleLeave}>
+      <BaseMap src="/map_img/hdu.png" alt="厂区卫星底图" />
       {pins.map((a) => (
         <AlertPin key={a.id} data={a} onClick={setActive} />
       ))}
@@ -35,12 +46,24 @@ function OverviewMode({ alerts = [] }) {
 
 const Stage = styled.div`
   position: relative;
-  width: 100%;
+  /* 锁正方形：边长 = 容器高度（高度不变），宽度随之相等。
+     卡片宽度由外层收窄到与正方形一致，故无左右留白。
+     底图为正方形（640×640），方形容器 + object-fit:cover 零裁切零留白，
+     红针的百分比坐标系与底图完全重合，保证打点不偏。 */
   height: 100%;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
   min-height: 360px;
   border-radius: var(--radius-default);
   /* 不裁切：让红针 hover 的 tooltip 可以溢出到地图边界之外而不被边框遮挡 */
   overflow: visible;
+
+  /* 窄屏/移动端：改宽度驱动正方形，避免高度驱动时横向溢出 */
+  @media (max-width: 1000px) {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
   background: radial-gradient(
     circle at 50% 35%,
     #0c1626 0%,

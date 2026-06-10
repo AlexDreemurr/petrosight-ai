@@ -14,15 +14,39 @@ import styled from "styled-components";
 import GlobalStyles from "./GlobalStyles";
 import Header from "./components/Header/Header";
 import SideBar from "./components/SideBar/SideBar";
+import Spinner from "./components/Spinner/Spinner";
 import OverViewPage from "./components/pages/OverView/OverViewPage";
 import AnalysisPage from "./components/pages/Analysis/AnalysisPage";
 import HistoryPage from "./components/pages/History/HistoryPage";
 import AssessmentPage from "./components/pages/Assessment/AssessmentPage";
+import LoginPage from "./components/pages/Login/LoginPage";
+import UserPage from "./components/pages/User/UserPage";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
 
 function App() {
   return (
-    <BrowserRouter>
+    <AuthProvider>
       <GlobalStyles />
+      <Gate />
+    </AuthProvider>
+  );
+}
+
+// 登录闸门：校验中显示 Spinner，未登录显示登录页，已登录渲染主应用
+function Gate() {
+  const { user, ready } = useAuth();
+
+  if (!ready) {
+    return (
+      <FullScreen>
+        <Spinner label="正在校验登录状态…" size={40} />
+      </FullScreen>
+    );
+  }
+  if (!user) return <LoginPage />;
+
+  return (
+    <BrowserRouter>
       <AppShell>
         <Header />
         <Body>
@@ -33,6 +57,7 @@ function App() {
               <Route path="/analysis" element={<AnalysisPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/assessment" element={<AssessmentPage />} />
+              <Route path="/user" element={<UserPage />} />
             </Routes>
           </Main>
         </Body>
@@ -40,6 +65,13 @@ function App() {
     </BrowserRouter>
   );
 }
+
+const FullScreen = styled.div`
+  display: grid;
+  place-items: center;
+  height: 100vh;
+  background: var(--bg-base);
+`;
 
 const AppShell = styled.div`
   display: flex;

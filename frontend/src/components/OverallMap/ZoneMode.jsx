@@ -13,19 +13,43 @@
 import React from "react";
 import styled from "styled-components";
 import { statusColor } from "../../data/mock";
+import { percentToLngLat } from "../../data/geo";
 import Icon from "../Icon/Icon";
 import DevicePopup from "./DevicePopup";
 
-function ZoneMode({ zones = [] }) {
+function ZoneMode({ zones = [], onHover }) {
   const [zoneId, setZoneId] = React.useState(null);
   const [device, setDevice] = React.useState(null);
 
   const zone = zones.find((z) => z.id === zoneId) || null;
 
+  const handleLeave = () => onHover?.(null);
+
+  // 区域总览：鼠标位置即整图全局坐标，直接换算经纬度
+  const handleMoveOverview = (e) => {
+    if (!onHover) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * 100;
+    const y = ((e.clientY - r.top) / r.height) * 100;
+    onHover(percentToLngLat(x, y));
+  };
+
+  // 区域详情：底图是按 zone.rect 裁剪放大的，需先把局部坐标映射回整图全局坐标
+  const handleMoveDetail = (e) => {
+    if (!onHover || !zone) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const lx = ((e.clientX - r.left) / r.width) * 100;
+    const ly = ((e.clientY - r.top) / r.height) * 100;
+    const [x0, y0, x1, y1] = zone.rect;
+    const gx = x0 + (lx / 100) * (x1 - x0);
+    const gy = y0 + (ly / 100) * (y1 - y0);
+    onHover(percentToLngLat(gx, gy));
+  };
+
   // ---- 区域详情视图 ----
   if (zone) {
     return (
-      <Stage>
+      <Stage onMouseMove={handleMoveDetail} onMouseLeave={handleLeave}>
         <DetailBar>
           <BackBtn
             onClick={() => {
@@ -43,7 +67,11 @@ function ZoneMode({ zones = [] }) {
         </DetailBar>
 
         <DetailStage>
-          <BaseMap src={zone.image} alt={zone.name} />
+          <ZoomMap
+            style={zoomCropStyle(zone.rect)}
+            src="/map_img/hdu.png"
+            alt={zone.name}
+          />
           {zone.devices.map((d) => (
             <DeviceNode
               key={d.id}
@@ -71,8 +99,8 @@ function ZoneMode({ zones = [] }) {
 
   // ---- 区域总览视图 ----
   return (
-    <Stage>
-      <BaseMap src="/map_img/factory.png" alt="厂区俯视图" />
+    <Stage onMouseMove={handleMoveOverview} onMouseLeave={handleLeave}>
+      <BaseMap src="/map_img/hdu.png" alt="厂区卫星底图" />
       <Svg viewBox="0 0 100 100" preserveAspectRatio="none">
         {zones.map((z) => (
           <polygon
@@ -102,6 +130,22 @@ function ZoneMode({ zones = [] }) {
       })}
     </Stage>
   );
+}
+
+/**
+ * 区域详情：把整张底图 hdu.png 按区域矩形 [x0,y0,x1,y1]（百分比）裁剪并放大，
+ * 使该区域恰好填满 DetailStage。矩形为正方形，故横纵缩放一致、不变形。
+ * 设备用 remapToRect 得到的局部 0~100 坐标定位，与此裁剪视图天然对齐。
+ */
+function zoomCropStyle([x0, y0, x1, y1]) {
+  const w = x1 - x0 || 1;
+  const h = y1 - y0 || 1;
+  return {
+    width: `${(10000 / w).toFixed(2)}%`,
+    height: `${(10000 / h).toFixed(2)}%`,
+    left: `${((-100 * x0) / w).toFixed(2)}%`,
+    top: `${((-100 * y0) / h).toFixed(2)}%`,
+  };
 }
 
 // status → 原始色值（SVG fill 不支持 CSS 变量嵌套时直接给值）
@@ -134,12 +178,21 @@ function centroid(points) {
 
 const Stage = styled.div`
   position: relative;
-  width: 100%;
+  /* 锁正方形：边长 = 容器高度（高度不变）。与综合预览一致，叠加层坐标系对齐。 */
   height: 100%;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
   min-height: 360px;
   border-radius: var(--radius-default);
   overflow: hidden;
   background: radial-gradient(circle at 50% 35%, #0c1626 0%, var(--bg-base) 75%);
+
+  /* 窄屏/移动端：改宽度驱动正方形，避免高度驱动时横向溢出 */
+  @media (max-width: 1000px) {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
 `;
 
 const BaseMap = styled.img`
@@ -256,6 +309,16 @@ const DetailTitle = styled.div`
 const DetailStage = styled.div`
   position: absolute;
   inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-default);
+`;
+
+// 区域详情底图：放大裁剪后的 HDU 卫星图（尺寸/偏移由 zoomCropStyle 注入）
+const ZoomMap = styled.img`
+  position: absolute;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
 `;
 
 const DeviceNode = styled.div`

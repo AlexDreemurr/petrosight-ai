@@ -37,6 +37,8 @@ import {
   Upload,
   ScanLine,
   Video,
+  LogOut,
+  Users,
 } from "lucide-react";
 
 const icons = {
@@ -61,6 +63,8 @@ const icons = {
   upload: Upload,
   scan: ScanLine,
   video: Video,
+  logout: LogOut,
+  users: Users,
 };
 
 const Icon = ({ id, color, size, strokeWidth, ...delegated }) => {

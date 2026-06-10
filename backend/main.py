@@ -283,6 +283,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 认证与用户管理路由（登录/登出/用户增删改查），见 backend/auth.py
+from auth import router as auth_router  # noqa: E402
+
+app.include_router(auth_router)
+
 
 def get_severity(category: str, value: float) -> str:
     """

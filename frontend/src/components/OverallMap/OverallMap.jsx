@@ -23,30 +23,42 @@ const MODES = [
 
 function OverallMap({ alerts = [], zones = [] }) {
   const [mode, setMode] = React.useState("overview");
+  // 鼠标悬停在地图上时的经纬度（BD09），移出地图时为 null
+  const [coord, setCoord] = React.useState(null);
 
   return (
     <Wrapper>
       <Toolbar>
         <SectionTitle>厂区地图</SectionTitle>
-        <Toggle>
-          {MODES.map((m) => (
-            <ToggleBtn
-              key={m.key}
-              data-active={mode === m.key}
-              onClick={() => setMode(m.key)}
-            >
-              <Icon id={m.icon} size={15} />
-              <span>{m.label}</span>
-            </ToggleBtn>
-          ))}
-        </Toggle>
+        <ToolbarRight>
+          {coord && (
+            <Coord>
+              <span>经度</span>
+              <strong>{coord.lng.toFixed(6)}</strong>
+              <span>纬度</span>
+              <strong>{coord.lat.toFixed(6)}</strong>
+            </Coord>
+          )}
+          <Toggle>
+            {MODES.map((m) => (
+              <ToggleBtn
+                key={m.key}
+                data-active={mode === m.key}
+                onClick={() => setMode(m.key)}
+              >
+                <Icon id={m.icon} size={15} />
+                <span>{m.label}</span>
+              </ToggleBtn>
+            ))}
+          </Toggle>
+        </ToolbarRight>
       </Toolbar>
 
       <Body>
         {mode === "overview" ? (
-          <OverviewMode alerts={alerts} />
+          <OverviewMode alerts={alerts} onHover={setCoord} />
         ) : (
-          <ZoneMode zones={zones} />
+          <ZoneMode zones={zones} onHover={setCoord} />
         )}
       </Body>
     </Wrapper>
@@ -75,6 +87,38 @@ const SectionTitle = styled.h3`
   font-size: var(--font-h3);
   font-weight: 500;
   color: var(--text-primary);
+`;
+
+const ToolbarRight = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+`;
+
+// 鼠标位置经纬度显示（toggle 左侧）
+const Coord = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  font-family: var(--font-data);
+  font-size: var(--font-tiny);
+  white-space: nowrap;
+
+  span {
+    color: var(--text-muted);
+  }
+  strong {
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  @media (max-width: 1000px) {
+    display: none;
+  }
 `;
 
 const Toggle = styled.div`

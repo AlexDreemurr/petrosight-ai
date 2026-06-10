@@ -11,8 +11,9 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import { getRecords, getSensors } from "../api";
+import { lngLatToPercent } from "../data/geo";
 import {
-  getZoneRegion,
+  squareBBoxRect,
   rectToPoints,
   remapToRect,
   positionFromId,
@@ -75,8 +76,13 @@ export function useOverviewData() {
 function transform(records, sensors) {
   // 传感器坐标查找表：优先用后端真实 lng/lat，缺失或为 0 时退回哈希坐标
   const posBySensor = {};
+  // 原始 BD09 经纬度查找表：仅在坐标有效时保留，供弹窗展示；无效则为 null
+  const coordBySensor = {};
   for (const s of sensors) {
     posBySensor[s.id] = resolvePos(s.id, s.lng, s.lat);
+    coordBySensor[s.id] = isGeoCoord(s.lng, s.lat)
+      ? { lng: s.lng, lat: s.lat }
+      : null;
   }
 
   // 每个传感器的最新一条记录
@@ -90,27 +96,31 @@ function transform(records, sensors) {
     }
   }
 
-  const alerts = buildAlerts(latestBySensor, posBySensor);
-  const zones = buildZones(sensors, latestBySensor, posBySensor);
+  const alerts = buildAlerts(latestBySensor, posBySensor, coordBySensor);
+  const zones = buildZones(sensors, latestBySensor, posBySensor, coordBySensor);
   const statusParams = buildStatus(latestBySensor, sensors);
   return { alerts, zones, statusParams };
 }
 
-// 解析坐标：lng/lat 为有效的 0~100 值则采用，否则用 id 哈希兜底
-function resolvePos(id, lng, lat) {
-  const valid =
+// 判断 lng/lat 是否为中国范围内的真实经纬度（BD09），用于区分有效坐标与占位/缺失。
+function isGeoCoord(lng, lat) {
+  return (
     typeof lng === "number" &&
     typeof lat === "number" &&
-    (lng !== 0 || lat !== 0) &&
-    lng >= 0 &&
-    lng <= 100 &&
-    lat >= 0 &&
-    lat <= 100;
-  return valid ? { x: lng, y: lat } : positionFromId(id);
+    lng > 70 &&
+    lng < 140 &&
+    lat > 3 &&
+    lat < 55
+  );
+}
+
+// 解析坐标：有效真实经纬度（BD09）则用墨卡托换算成底图百分比，否则用 id 哈希兜底。
+function resolvePos(id, lng, lat) {
+  return isGeoCoord(lng, lat) ? lngLatToPercent(lng, lat) : positionFromId(id);
 }
 
 // 每个传感器最新记录 → 告警事件（综合预览红针 + AlertFeed 共用，均为当前状态）
-function buildAlerts(latestBySensor, posBySensor) {
+function buildAlerts(latestBySensor, posBySensor, coordBySensor) {
   return Object.values(latestBySensor).map((r) => ({
     id: r.id,
     severity: normalizeSeverity(r.severity),
@@ -122,13 +132,14 @@ function buildAlerts(latestBySensor, posBySensor) {
     value: r.value,
     unit: r.unit || "",
     position: posBySensor[r.sensor_id] || positionFromId(r.sensor_id || r.id),
+    coord: coordBySensor[r.sensor_id] || null, // 原始 BD09 经纬度（弹窗展示）
     time: formatTime(r.recorded_at),
     _ts: r.recorded_at || "",
   }));
 }
 
 // 传感器 + 最新记录 → 区域列表（分区查询用），状态基于每个传感器的最新读数
-function buildZones(sensors, latestBySensor, posBySensor) {
+function buildZones(sensors, latestBySensor, posBySensor, coordBySensor) {
   // 按 zone 分组传感器（保持出现顺序）
   const order = [];
   const grouped = {};
@@ -141,9 +152,13 @@ function buildZones(sensors, latestBySensor, posBySensor) {
     grouped[z].push(s);
   }
 
-  return order.map((zoneName, i) => {
-    const region = getZoneRegion(zoneName, i);
-    const devices = grouped[zoneName].map((s) => {
+  return order.map((zoneName) => {
+    const members = grouped[zoneName];
+    // 该区域所有传感器在底图上的全局坐标，自动框成一块正方形区域矩形
+    const gposList = members.map((s) => posBySensor[s.id] || positionFromId(s.id));
+    const rect = squareBBoxRect(gposList);
+
+    const devices = members.map((s) => {
       const rep = latestBySensor[s.id]; // 该传感器最新一条记录
       const status =
         s.status === "offline" || s.status === "fault"
@@ -154,7 +169,7 @@ function buildZones(sensors, latestBySensor, posBySensor) {
       // 传感器在整张底图上的全局坐标（落在本区域矩形内）
       const gpos = posBySensor[s.id] || positionFromId(s.id);
       // 区域详情大图用的局部坐标：把全局坐标按本区域矩形重映射到 0~100
-      const dpos = remapToRect(gpos.x, gpos.y, region.rect);
+      const dpos = remapToRect(gpos.x, gpos.y, rect);
       return {
         id: s.id,
         type: s.type || rep?.category || "sensor",
@@ -164,6 +179,7 @@ function buildZones(sensors, latestBySensor, posBySensor) {
         unit: rep ? rep.unit || "" : "",
         x: dpos.x,
         y: dpos.y,
+        coord: coordBySensor[s.id] || null, // 原始 BD09 经纬度（弹窗展示）
         time: rep ? formatTime(rep.recorded_at) : "—",
       };
     });
@@ -172,8 +188,8 @@ function buildZones(sensors, latestBySensor, posBySensor) {
       id: zoneName,
       name: zoneName,
       status: worstStatus(devices.map((d) => d.status)),
-      points: rectToPoints(region.rect),
-      image: region.image,
+      points: rectToPoints(rect),
+      rect, // 供区域详情裁剪放大底图（hdu.png）使用
       devices,
     };
   });

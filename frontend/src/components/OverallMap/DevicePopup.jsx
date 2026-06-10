@@ -11,6 +11,7 @@
  * 数据兼容：
  *   - 告警对象含 severity/category/title/detail/sensor_id/value/unit/time
  *   - 设备对象含 status/type/name/id/value/unit/time
+ *   - 两者均可含 coord（{lng,lat} 原始 BD09 经纬度，有效时展示）
  */
 import React from "react";
 import styled from "styled-components";
@@ -86,6 +87,14 @@ function DevicePopup({ data, onClose }) {
           <Field>
             <FieldLabel>{isAlert ? "触发时间" : "最近上报"}</FieldLabel>
             <FieldValue>{data.time}</FieldValue>
+          </Field>
+        )}
+        {data.coord && (
+          <Field style={{ gridColumn: "1 / -1" }}>
+            <FieldLabel>经纬度坐标（BD09）</FieldLabel>
+            <FieldValue>
+              {data.coord.lng.toFixed(6)}, {data.coord.lat.toFixed(6)}
+            </FieldValue>
           </Field>
         )}
       </Grid>

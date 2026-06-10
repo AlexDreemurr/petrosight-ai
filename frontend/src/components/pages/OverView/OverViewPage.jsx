@@ -76,25 +76,39 @@ const Page = styled.div`
   height: 100%;
 `;
 
+// 地图 + 告警流占满当前可视高度（= Page 全高）；StatusBox 溢出到下方，需向下滚动查看。
 const TopRow = styled.div`
-  display: grid;
-  grid-template-columns: 65fr 35fr;
+  display: flex;
   gap: 16px;
-  flex: 1;
+  flex: 0 0 100%;
   min-height: 480px;
 
   @media (max-width: 1000px) {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    flex-basis: auto;
   }
 `;
 
+// 地图区按高度锁定正方形（宽 = 高），使卡片宽度恰好等于方形地图宽度，无左右留白。
 const MapArea = styled.div`
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
   min-height: 480px;
+
+  @media (max-width: 1000px) {
+    aspect-ratio: auto;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
 `;
 
+// 告警流占据地图右侧的剩余宽度，并撑满可视高度。
 const FeedArea = styled.div`
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 480px;
-  max-height: 640px;
 `;
 
 const Centered = styled.div`

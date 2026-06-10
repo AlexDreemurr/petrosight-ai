@@ -45,44 +45,39 @@ ROSTER = [
     ("UAV-02", "device", "drone", ZONES[3]),
 ]
 
-ZONE_REGIONS = {
-    "A区-常压蒸馏": (8, 8, 44, 46),
-    "B区-加氢裂化": (46, 8, 80, 40),
-    "C区-催化裂化": (46, 42, 80, 78),
-    "D区-储罐区": (8, 48, 44, 78),
-    "E区-公用工程": (8, 80, 80, 94),
+# HDU 校区内 5 个片区中心（BD09 经纬度），围绕静态底图中心 (120.349678, 30.320160)。
+# 必须落在 hdu.png 覆盖范围内（zoom=18、640×640，约图心 ±160m），否则打点会跑到图外。
+# 前端 frontend/src/data/geo.js 的 MAP_META 须与下载底图时的参数保持一致。
+HDU_ZONE_CENTERS = {
+    "A区-常压蒸馏": (120.34855, 30.32095),
+    "B区-加氢裂化": (120.35080, 30.32090),
+    "C区-催化裂化": (120.35090, 30.31935),
+    "D区-储罐区": (120.34860, 30.31940),
+    "E区-公用工程": (120.34970, 30.32015),
 }
+SENSOR_SPREAD = 0.00035  # 同片区内传感器散布步长（约 ±35m）
 
 N_SNAPSHOTS = 8
 CAM_VIOLATION_PROB = 0.12  # 摄像头每个快照拍到违规的概率
 
 
-def positions_in_rect(n, rect, margin=4.0, jitter_ratio=0.18, seed=7):
-    """在矩形（留 margin 边距）内为 n 个点生成唯一、均匀分布的坐标。"""
-    x0, y0, x1, y1 = rect
-    x0 += margin; y0 += margin; x1 -= margin; y1 -= margin
-    rng = random.Random(seed)
-    cols = math.ceil(math.sqrt(n))
-    rows = math.ceil(n / cols)
-    cw = (x1 - x0) / cols
-    ch = (y1 - y0) / rows
-    pts = []
-    for idx in range(n):
-        r, c = divmod(idx, cols)
-        x = x0 + cw * (c + 0.5) + rng.uniform(-cw * jitter_ratio, cw * jitter_ratio)
-        y = y0 + ch * (r + 0.5) + rng.uniform(-ch * jitter_ratio, ch * jitter_ratio)
-        pts.append((round(x, 2), round(y, 2)))
-    rng.shuffle(pts)
-    return pts
-
-
 def compute_positions(roster):
+    """为每个传感器生成 HDU 校区内的 BD09 经纬度：按片区中心网格化散开，避免重叠。"""
     pos, by_zone = {}, {}
     for sid, _c, _t, zone in roster:
         by_zone.setdefault(zone, []).append(sid)
     for zi, (zone, sids) in enumerate(by_zone.items()):
-        for sid, p in zip(sids, positions_in_rect(len(sids), ZONE_REGIONS[zone], seed=7 + zi)):
-            pos[sid] = p
+        cx, cy = HDU_ZONE_CENTERS[zone]
+        rng = random.Random(7 + zi)
+        n = len(sids)
+        cols = math.ceil(math.sqrt(n))
+        for idx, sid in enumerate(sids):
+            r, c = divmod(idx, cols)
+            jit = SENSOR_SPREAD / 3
+            ox = (c - (cols - 1) / 2) * SENSOR_SPREAD + rng.uniform(-jit, jit)
+            oy = (r - 0.5) * SENSOR_SPREAD + rng.uniform(-jit, jit)
+            # 注意：纬度方向偏移直接加在 lat 上；经度不做 cos 修正（校区尺度误差可忽略）
+            pos[sid] = (round(cx + ox, 6), round(cy - oy, 6))
     return pos
 
 

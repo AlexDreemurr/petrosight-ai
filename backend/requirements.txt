@@ -8,6 +8,9 @@ supabase==2.10.0
 httpx==0.27.0
 python-dotenv==1.0.1
 python-multipart==0.0.12
+# 认证：JWT 签发/校验 + 密码哈希
+PyJWT==2.9.0
+bcrypt==4.2.0
 
 # Image detection (YOLO-World open-vocabulary). Heavy; only needed when
 # ENABLE_YOLO=true. Render free tier may not handle it; set ENABLE_YOLO=false there.

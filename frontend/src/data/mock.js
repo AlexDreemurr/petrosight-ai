@@ -54,43 +54,40 @@ export const deviceIconId = {
 };
 
 // ---- 地图几何（展示层，不来自后端）----
-
-// 每个区域固定占据底图上的一块矩形（百分比坐标 [x0,y0,x1,y1]）+ 区域放大示意图。
-// 关键约定：后端 generate_mock.py 用「完全一致」的矩形（按相同的区域名）生成传感器
-// lng/lat，使其落在该矩形内部。这样综合预览的红针位置与分区查询的多边形位置保持一致。
-// 若上传了未知区域名，则按出现顺序退回到 ZONE_FALLBACK_RECTS 兜底。
-export const ZONE_REGIONS = {
-  "A区-常压蒸馏": { rect: [8, 8, 44, 46], image: "/map_img/area1.png" },
-  "B区-加氢裂化": { rect: [46, 8, 80, 40], image: "/map_img/area2.png" },
-  "C区-催化裂化": { rect: [46, 42, 80, 78], image: "/map_img/area3.png" },
-  "D区-储罐区": { rect: [8, 48, 44, 78], image: "/map_img/area1.png" },
-  "E区-公用工程": { rect: [8, 80, 80, 94], image: "/map_img/area2.png" },
-};
-
-const ZONE_FALLBACK_RECTS = [
-  [8, 8, 44, 46],
-  [46, 8, 80, 40],
-  [46, 42, 80, 78],
-  [8, 48, 44, 78],
-  [8, 80, 80, 94],
-];
-const ZONE_FALLBACK_IMAGES = [
-  "/map_img/area1.png",
-  "/map_img/area2.png",
-  "/map_img/area3.png",
-];
+//
+// 区域矩形不再硬编码：由 hooks/useOverviewData.js 的 buildZones 用 squareBBoxRect
+// 从该区域所有传感器的真实投影坐标自动框出（综合预览多边形、区域详情裁剪、设备打点共用）。
 
 // 矩形 [x0,y0,x1,y1] → SVG polygon points 字符串
 export function rectToPoints([x0, y0, x1, y1]) {
   return `${x0},${y0} ${x1},${y0} ${x1},${y1} ${x0},${y1}`;
 }
 
-// 取某区域的几何：优先按区域名精确匹配，未知区域按出现序号兜底
-export function getZoneRegion(name, index = 0) {
-  if (ZONE_REGIONS[name]) return ZONE_REGIONS[name];
-  const i = ((index % ZONE_FALLBACK_RECTS.length) + ZONE_FALLBACK_RECTS.length) %
-    ZONE_FALLBACK_RECTS.length;
-  return { rect: ZONE_FALLBACK_RECTS[i], image: ZONE_FALLBACK_IMAGES[i % ZONE_FALLBACK_IMAGES.length] };
+/**
+ * 计算包住一组点的「正方形」矩形（百分比坐标 [x0,y0,x1,y1]），带边距。
+ * 用于把同一区域的传感器自动框成一块方形区域：综合预览画多边形、区域详情裁剪放大底图、
+ * 设备局部打点三者共用这一矩形，保证对齐；正方形可避免详情放大时底图被拉伸变形。
+ *
+ * @param {{x:number,y:number}[]} points 该区域所有传感器的底图全局百分比坐标
+ * @param {number} pad 向四周扩展的边距（百分比）
+ * @returns {[number,number,number,number]}
+ */
+export function squareBBoxRect(points, pad = 7) {
+  if (!points || !points.length) return [10, 10, 90, 90];
+  let minX = 100, minY = 100, maxX = 0, maxY = 0;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+  // 取较长边做成正方形（中心不变）
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const half = Math.max(maxX - minX, maxY - minY) / 2;
+  const clamp = (v) => Math.max(0, Math.min(100, v));
+  return [clamp(cx - half), clamp(cy - half), clamp(cx + half), clamp(cy + half)];
 }
 
 // 把底图全局坐标 (x,y) 从某矩形内重映射到 0~100（用于区域详情大图的设备打点）

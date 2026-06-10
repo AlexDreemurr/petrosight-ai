@@ -18,7 +18,13 @@
       "Bash(npm install *)",
       "Bash(python -c \"open\\('requirements.txt',encoding='ascii'\\).read\\(\\); print\\('requirements.txt is pure ASCII - pip OK'\\)\")",
       "Bash(python -c ' *)",
-      "Bash(grep -v -E \"Ultralytics|YOLO|Python|torch|^\\\\s*$|Downloading|requirements|AMP|Setup\")"
+      "Bash(grep -v -E \"Ultralytics|YOLO|Python|torch|^\\\\s*$|Downloading|requirements|AMP|Setup\")",
+      "Bash(cd backend *)",
+      "Bash(npm run *)",
+      "Bash(node --input-type=module -e ' *)",
+      "WebSearch",
+      "Bash(python -c \"import bcrypt, jwt; print\\('deps ok: bcrypt', bcrypt.__version__ if hasattr\\(bcrypt,'__version__'\\) else 'ok', '| pyjwt', jwt.__version__\\)\")",
+      "Bash(python -m pip install \"PyJWT==2.9.0\" \"bcrypt==4.2.0\")"
     ]
   }
 }

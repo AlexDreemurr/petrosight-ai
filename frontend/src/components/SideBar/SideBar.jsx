@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: "/analysis", label: "数据分析", iconId: "analysis" },
   { to: "/history", label: "历史日志", iconId: "history" },
   { to: "/assessment", label: "状态评估", iconId: "assessment" },
+  { to: "/user", label: "用户中心", iconId: "user" },
 ];
 
 function SideBar() {

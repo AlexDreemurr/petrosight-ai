@@ -1,12 +1,80 @@
 const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+const TOKEN_KEY = "petrosight_token";
+
+// 登录 token 读写（AuthContext 负责写入，request 自动读取附带）
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || "";
+}
+export function setToken(token) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, options);
+  const token = getToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
   if (!res.ok) {
+    // 401：登录失效，清掉本地 token 并跳回登录
+    if (res.status === 401) {
+      setToken(null);
+      if (!path.startsWith("/api/auth/login")) {
+        window.dispatchEvent(new Event("auth:logout"));
+      }
+    }
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `请求失败 (${res.status})`);
   }
   return res.json();
+}
+
+// ── 认证 ────────────────────────────────────────────────────────────────
+export async function login(username, password) {
+  return request("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function getMe() {
+  return request("/api/auth/me");
+}
+
+export async function changePassword(oldPassword, newPassword) {
+  return request("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+}
+
+// ── 用户管理（仅 admin）──────────────────────────────────────────────────
+export async function listUsers() {
+  return request("/api/auth/users");
+}
+
+export async function createUser({ username, password, name, role }) {
+  return request("/api/auth/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, name, role }),
+  });
+}
+
+export async function updateUser(id, patch) {
+  return request(`/api/auth/users/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteUser(id) {
+  return request(`/api/auth/users/${id}`, { method: "DELETE" });
 }
 
 export async function registerSensors(file) {
