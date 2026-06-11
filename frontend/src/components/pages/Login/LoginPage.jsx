@@ -8,12 +8,24 @@ import React from "react";
 import styled from "styled-components";
 import { useAuth } from "../../../auth/AuthContext";
 
+// 开发调试账号（常驻显示，方便其他开发人员登录；上线前移除本块）
+const DEV_ACCOUNT = {
+  username: "系统管理员",
+  password: "we-f0@dbdjwjcnw",
+  roleLabel: "系统管理员",
+};
+
 function LoginPage() {
   const { login } = useAuth();
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+
+  const fillDev = () => {
+    setUsername(DEV_ACCOUNT.username);
+    setPassword(DEV_ACCOUNT.password);
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -66,6 +78,28 @@ function LoginPage() {
         <Submit type="submit" disabled={loading || !username || !password}>
           {loading ? "登录中…" : "登 录"}
         </Submit>
+
+        <DevBox>
+          <DevHead>
+            <DevTag>开发账号</DevTag>
+            <FillBtn type="button" onClick={fillDev}>
+              一键填入
+            </FillBtn>
+          </DevHead>
+          <DevRow>
+            <DevK>用户名</DevK>
+            <DevV>{DEV_ACCOUNT.username}</DevV>
+          </DevRow>
+          <DevRow>
+            <DevK>密码</DevK>
+            <DevV>{DEV_ACCOUNT.password}</DevV>
+          </DevRow>
+          <DevRow>
+            <DevK>角色</DevK>
+            <DevV>{DEV_ACCOUNT.roleLabel}</DevV>
+          </DevRow>
+          <DevNote>仅供开发调试使用，上线前请移除此提示。</DevNote>
+        </DevBox>
       </Card>
     </Shell>
   );
@@ -75,7 +109,11 @@ const Shell = styled.div`
   height: 100vh;
   display: grid;
   place-items: center;
-  background: radial-gradient(circle at 50% 30%, #0c1626 0%, var(--bg-base) 75%);
+  background: radial-gradient(
+    circle at 50% 30%,
+    #0c1626 0%,
+    var(--bg-base) 75%
+  );
 `;
 
 const Card = styled.form`
@@ -169,6 +207,71 @@ const Submit = styled.button`
     opacity: 0.5;
     cursor: not-allowed;
   }
+`;
+
+const DevBox = styled.div`
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px dashed var(--color-warning);
+  border-radius: 8px;
+  background: rgba(239, 159, 39, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+`;
+
+const DevHead = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+`;
+
+const DevTag = styled.span`
+  font-size: var(--font-small);
+  font-weight: 600;
+  color: var(--color-warning);
+`;
+
+const FillBtn = styled.button`
+  padding: 3px 10px;
+  border: 1px solid var(--color-warning);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-warning);
+  font-size: var(--font-tiny);
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(239, 159, 39, 0.15);
+  }
+`;
+
+const DevRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--font-small);
+`;
+
+const DevK = styled.span`
+  width: 48px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+`;
+
+const DevV = styled.span`
+  font-family: var(--font-data);
+  font-weight: 500;
+  color: var(--text-primary);
+  user-select: all;
+`;
+
+const DevNote = styled.div`
+  margin-top: 2px;
+  font-size: var(--font-tiny);
+  color: var(--text-muted);
 `;
 
 export default LoginPage;
